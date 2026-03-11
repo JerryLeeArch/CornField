@@ -1,0 +1,9 @@
+node_modules/
+.DS_Store
+npm-debug.log*
+videos/
+images/
+data/thumbnails/
+data/videoplayer.db
+data/videoplayer.db-shm
+data/videoplayer.db-wal

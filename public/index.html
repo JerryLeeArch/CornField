@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CornField</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div id="app">
+      <header class="topbar">
+        <div class="brand" id="goLibrary">CornField</div>
+        <nav class="nav-links">
+          <button id="navLibrary" class="link-btn">Library</button>
+          <button id="navStarrings" class="link-btn">Starring</button>
+        </nav>
+        <div class="topbar-actions">
+          <button id="navDatabase" class="link-btn">Video DB</button>
+          <button id="openSettings" class="settings-btn" title="Settings">⚙</button>
+        </div>
+      </header>
+
+      <main id="main"></main>
+    </div>
+
+    <dialog id="settingsDialog" class="settings-dialog">
+      <form id="settingsForm" method="dialog">
+        <h2>Settings</h2>
+        <label>
+          Library Folder Path
+          <input id="libraryRootInput" type="text" placeholder="/Users/you/Videos" required />
+        </label>
+        <label>
+          Arrow Key Skip Seconds
+          <select id="skipSecondsInput">
+            <option value="5">5 seconds</option>
+            <option value="10">10 seconds</option>
+            <option value="15">15 seconds</option>
+          </select>
+        </label>
+        <label>
+          Videos Per Page
+          <input id="pageSizeInput" type="number" min="8" max="100" step="1" />
+        </label>
+        <label>
+          Playbar Auto-hide Delay
+          <select id="controlsHideMsInput">
+            <option value="0">Never hide</option>
+            <option value="1500">1.5 seconds</option>
+            <option value="2500">2.5 seconds</option>
+            <option value="4000">4 seconds</option>
+            <option value="6000">6 seconds</option>
+          </select>
+        </label>
+        <label>
+          Related Videos Max Count
+          <input id="relatedLimitInput" type="number" min="1" max="48" step="1" />
+        </label>
+        <div class="dialog-actions">
+          <button type="button" id="scanNowBtn" class="primary">Scan Library</button>
+          <button type="submit" class="primary">Save</button>
+          <button type="button" id="closeSettings">Close</button>
+        </div>
+        <div id="scanPreviewBox" class="scan-preview-box" hidden>
+          <div id="scanPreviewText" class="status"></div>
+          <div class="dialog-actions">
+            <button type="button" id="scanProceedBtn" class="primary">Proceed</button>
+            <button type="button" id="scanCancelBtn">Cancel</button>
+          </div>
+        </div>
+      </form>
+    </dialog>
+
+    <template id="libraryViewTemplate">
+      <section class="library-toolbar">
+        <div class="toolbar-grid">
+          <input id="searchInput" type="search" placeholder="Search title, file name, category, tag, starring..." />
+          <select id="qualityFilter">
+            <option value="">All Quality</option>
+            <option value="720">720p or higher</option>
+            <option value="1080">1080p or higher</option>
+            <option value="1440">1440p or higher</option>
+          </select>
+          <select id="sortSelect">
+            <option value="random">Random</option>
+            <option value="upload_desc">Upload Date (Newest)</option>
+            <option value="upload_asc">Upload Date (Oldest)</option>
+            <option value="views_desc">Views (High to Low)</option>
+            <option value="recent_scan">Recently Scanned</option>
+          </select>
+          <button id="applyFiltersBtn" class="primary">Apply</button>
+        </div>
+        <div class="tag-scroller-wrap">
+          <div id="tagScroller" class="tag-scroller"></div>
+        </div>
+      </section>
+      <section>
+        <div id="libraryStatus" class="status"></div>
+        <div id="videoGrid" class="video-grid"></div>
+        <div id="pager" class="pager"></div>
+      </section>
+    </template>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
