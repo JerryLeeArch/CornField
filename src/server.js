@@ -128,11 +128,26 @@ function toAppleScriptString(value) {
   return `"${String(value).replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"`;
 }
 
+function toPowerShellSingleQuotedString(value) {
+  return `'${String(value).replaceAll("'", "''")}'`;
+}
+
+function normalizePathForComparison(value) {
+  const resolved = path.resolve(String(value || ''));
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+}
+
+function isPathInsideRoot(rootPath, candidatePath) {
+  const normalizedRoot = normalizePathForComparison(rootPath);
+  const normalizedCandidate = normalizePathForComparison(candidatePath);
+  const relativePath = path.relative(normalizedRoot, normalizedCandidate);
+
+  return relativePath === '' || (!relativePath.startsWith('..') && !path.isAbsolute(relativePath));
+}
+
 async function selectFolderFromFinder(initialPath = '') {
   if (process.platform !== 'darwin') {
-    const error = new Error('Finder folder picker is currently available on macOS only.');
-    error.statusCode = 501;
-    throw error;
+    return null;
   }
 
   const trimmedInitialPath = String(initialPath || '').trim();
@@ -164,6 +179,64 @@ async function selectFolderFromFinder(initialPath = '') {
     }
     throw error;
   }
+}
+
+async function selectFolderFromWindows(initialPath = '') {
+  if (process.platform !== 'win32') {
+    return null;
+  }
+
+  const trimmedInitialPath = String(initialPath || '').trim();
+  let selectedPathLine = '';
+
+  if (trimmedInitialPath) {
+    const resolvedInitialPath = path.resolve(trimmedInitialPath);
+    try {
+      const stat = await fsp.stat(resolvedInitialPath);
+      if (stat.isDirectory()) {
+        selectedPathLine = `$dialog.SelectedPath = ${toPowerShellSingleQuotedString(resolvedInitialPath)}`;
+      }
+    } catch {
+      // Ignore invalid initial path and fall back to the dialog default.
+    }
+  }
+
+  const script = [
+    'Add-Type -AssemblyName System.Windows.Forms',
+    '$dialog = New-Object System.Windows.Forms.FolderBrowserDialog',
+    `$dialog.Description = ${toPowerShellSingleQuotedString('Select your video library folder')}`,
+    '$dialog.ShowNewFolderButton = $false',
+    selectedPathLine,
+    '$result = $dialog.ShowDialog()',
+    'if ($result -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output $dialog.SelectedPath }'
+  ]
+    .filter(Boolean)
+    .join('; ');
+
+  try {
+    const { stdout } = await execFileAsync(
+      'powershell.exe',
+      ['-NoProfile', '-STA', '-Command', script],
+      { windowsHide: true }
+    );
+    return String(stdout || '').trim() || null;
+  } catch (error) {
+    throw new Error(error.stderr || error.message || 'Could not open the Windows folder picker.');
+  }
+}
+
+async function selectFolderFromSystemDialog(initialPath = '') {
+  if (process.platform === 'darwin') {
+    return selectFolderFromFinder(initialPath);
+  }
+
+  if (process.platform === 'win32') {
+    return selectFolderFromWindows(initialPath);
+  }
+
+  const error = new Error('Folder picker is currently available on macOS and Windows only. Enter the path manually instead.');
+  error.statusCode = 501;
+  throw error;
 }
 
 function buildRandomOrderBy(seedRaw) {
@@ -325,7 +398,7 @@ app.get('/api/settings', async () => {
 
 app.post('/api/system/select-folder', async (request, reply) => {
   try {
-    const selectedPath = await selectFolderFromFinder(request.body?.initialPath || '');
+    const selectedPath = await selectFolderFromSystemDialog(request.body?.initialPath || '');
     return {
       ok: true,
       cancelled: !selectedPath,
@@ -333,7 +406,7 @@ app.post('/api/system/select-folder', async (request, reply) => {
     };
   } catch (error) {
     const statusCode = Number(error.statusCode) || 500;
-    return reply.code(statusCode).send({ error: error.message || 'Could not open Finder folder picker.' });
+    return reply.code(statusCode).send({ error: error.message || 'Could not open the system folder picker.' });
   }
 });
 
@@ -760,7 +833,7 @@ app.post('/api/videos/:id/rename', async (request, reply) => {
   const oldAbs = path.resolve(libraryRoot, existing.relative_path);
   const newAbs = path.resolve(libraryRoot, newRelativePath);
 
-  if (!newAbs.startsWith(`${libraryRoot}${path.sep}`) && newAbs !== libraryRoot) {
+  if (!isPathInsideRoot(libraryRoot, newAbs)) {
     return reply.code(400).send({ error: 'Invalid target path.' });
   }
 
@@ -810,8 +883,7 @@ app.delete('/api/videos/:id', async (request, reply) => {
     }
 
     const absPath = path.resolve(libraryRoot, existing.relative_path);
-    const rootPrefix = `${libraryRoot}${path.sep}`;
-    if (!absPath.startsWith(rootPrefix) && absPath !== libraryRoot) {
+    if (!isPathInsideRoot(libraryRoot, absPath)) {
       return reply.code(400).send({ error: 'Invalid file path' });
     }
 
@@ -1243,8 +1315,7 @@ app.get('/media/*', async (request, reply) => {
   }
 
   const absPath = path.resolve(libraryRoot, relative);
-  const rootPrefix = `${libraryRoot}${path.sep}`;
-  if (!absPath.startsWith(rootPrefix) && absPath !== libraryRoot) {
+  if (!isPathInsideRoot(libraryRoot, absPath)) {
     return reply.code(403).send({ error: 'Path is outside library root' });
   }
 
