@@ -1238,9 +1238,54 @@ async function renderVideoView(videoId) {
     bindLibraryToolbar({ navigateToLibrary: true });
 
     const relatedGrid = document.getElementById('relatedGrid');
-    relatedGrid.innerHTML = '<div class="muted">Loading related videos...</div>';
-    const relatedLimit = getRelatedVideoLimit(relatedGrid);
-    state.layout.relatedLimit = relatedLimit;
+    let latestRelatedRequestId = 0;
+    let relatedResizeTimer = null;
+
+    function renderRelatedVideos(related) {
+      if (related.length === 0) {
+        relatedGrid.innerHTML = '<div class="muted">No related videos found.</div>';
+        return;
+      }
+
+      relatedGrid.innerHTML = '';
+      related.forEach((rv, index) => {
+        const card = createRelatedCard(rv);
+        card.style.setProperty('--stagger', String(index));
+        relatedGrid.appendChild(card);
+      });
+    }
+
+    async function refreshRelatedVideos({ force = false } = {}) {
+      const nextRelatedLimit = getRelatedVideoLimit(relatedGrid);
+      if (!force && nextRelatedLimit === state.layout.relatedLimit) {
+        return;
+      }
+
+      state.layout.relatedLimit = nextRelatedLimit;
+      const requestId = ++latestRelatedRequestId;
+      relatedGrid.innerHTML = '<div class="muted">Loading related videos...</div>';
+
+      try {
+        const relatedRes = await api(`/api/videos/${videoId}/related?limit=${nextRelatedLimit}`);
+        if (token !== currentRenderToken || requestId !== latestRelatedRequestId) return;
+        renderRelatedVideos(relatedRes.items || []);
+      } catch (error) {
+        if (token !== currentRenderToken || requestId !== latestRelatedRequestId) return;
+        relatedGrid.innerHTML = `<div class="warning error">${escapeHtml(error.message)}</div>`;
+      }
+    }
+
+    function scheduleRelatedVideosRefresh() {
+      if (relatedResizeTimer) {
+        clearTimeout(relatedResizeTimer);
+      }
+
+      relatedResizeTimer = setTimeout(() => {
+        refreshRelatedVideos();
+      }, 120);
+    }
+
+    state.layout.relatedLimit = null;
 
     const videoEl = document.getElementById('videoEl');
     const playerShell = document.getElementById('playerShell');
@@ -1255,27 +1300,7 @@ async function renderVideoView(videoId) {
     const timeLabel = document.getElementById('timeLabel');
     const notesList = document.getElementById('notesList');
 
-    const relatedPromise = api(`/api/videos/${videoId}/related?limit=${relatedLimit}`)
-      .then((relatedRes) => {
-        if (token !== currentRenderToken) return;
-
-        const related = relatedRes.items || [];
-        if (related.length === 0) {
-          relatedGrid.innerHTML = '<div class="muted">No related videos found.</div>';
-          return;
-        }
-
-        relatedGrid.innerHTML = '';
-        related.forEach((rv, index) => {
-          const card = createRelatedCard(rv);
-          card.style.setProperty('--stagger', String(index));
-          relatedGrid.appendChild(card);
-        });
-      })
-      .catch((error) => {
-        if (token !== currentRenderToken) return;
-        relatedGrid.innerHTML = `<div class="warning error">${escapeHtml(error.message)}</div>`;
-      });
+    const relatedPromise = refreshRelatedVideos({ force: true });
 
     let hideTimer = null;
     const controlsHideMsRaw = Number(state.settings?.controlsHideMs ?? 2500);
@@ -1900,6 +1925,23 @@ async function renderVideoView(videoId) {
     addCleanup(() => {
       if (hideTimer) clearTimeout(hideTimer);
       videoEl.pause();
+    });
+
+    if (typeof ResizeObserver === 'function') {
+      const relatedResizeObserver = new ResizeObserver(() => {
+        scheduleRelatedVideosRefresh();
+      });
+      relatedResizeObserver.observe(relatedGrid);
+      addCleanup(() => relatedResizeObserver.disconnect());
+    } else {
+      window.addEventListener('resize', scheduleRelatedVideosRefresh);
+      addCleanup(() => window.removeEventListener('resize', scheduleRelatedVideosRefresh));
+    }
+
+    addCleanup(() => {
+      if (relatedResizeTimer) {
+        clearTimeout(relatedResizeTimer);
+      }
     });
 
     await relatedPromise;
