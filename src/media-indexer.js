@@ -102,6 +102,7 @@ async function probeVideo(absPath) {
 }
 
 let ffmpegPathCache;
+let quickLookPathCache;
 
 async function resolveFfmpegPath() {
   if (ffmpegPathCache !== undefined) {
@@ -136,6 +137,28 @@ async function resolveFfmpegPath() {
   }
 }
 
+async function resolveQuickLookPath() {
+  if (quickLookPathCache !== undefined) {
+    return quickLookPathCache;
+  }
+
+  if (process.platform !== 'darwin') {
+    quickLookPathCache = null;
+    return quickLookPathCache;
+  }
+
+  const quickLookPath = '/usr/bin/qlmanage';
+
+  try {
+    await fs.access(quickLookPath);
+    quickLookPathCache = quickLookPath;
+    return quickLookPathCache;
+  } catch {
+    quickLookPathCache = null;
+    return quickLookPathCache;
+  }
+}
+
 const selectRelativePathsStmt = db.prepare('SELECT relative_path FROM videos');
 const selectVideoByRelativePathStmt = db.prepare('SELECT id, thumbnail_path AS thumbnailPath FROM videos WHERE relative_path = ?');
 const updateVideoThumbnailStmt = db.prepare('UPDATE videos SET thumbnail_path = ?, thumbnail_time = ?, updated_at = ? WHERE id = ?');
@@ -160,7 +183,7 @@ function calculateScanDiff(files) {
   };
 }
 
-async function captureAutoThumbnail(absPath, videoId, durationSec) {
+async function captureAutoThumbnailWithFfmpeg(absPath, videoId, durationSec) {
   const ffmpegPath = await resolveFfmpegPath();
   if (!ffmpegPath) {
     return null;
@@ -196,6 +219,49 @@ async function captureAutoThumbnail(absPath, videoId, durationSec) {
     await fs.unlink(outputAbsPath).catch(() => {});
     return null;
   }
+}
+
+async function captureAutoThumbnailWithQuickLook(absPath, videoId) {
+  const quickLookPath = await resolveQuickLookPath();
+  if (!quickLookPath) {
+    return null;
+  }
+
+  await fs.mkdir(thumbnailRoot, { recursive: true });
+
+  const tempDir = await fs.mkdtemp(path.join(thumbnailRoot, 'ql-thumb-'));
+  const outputName = `video-${videoId}-auto-${Date.now()}.png`;
+  const outputAbsPath = path.join(thumbnailRoot, outputName);
+
+  try {
+    await execFileAsync(quickLookPath, ['-t', '-s', '1024', '-o', tempDir, absPath]);
+
+    const generatedName = (await fs.readdir(tempDir)).find((fileName) => fileName.toLowerCase().endsWith('.png'));
+    if (!generatedName) {
+      return null;
+    }
+
+    await fs.rename(path.join(tempDir, generatedName), outputAbsPath);
+
+    return {
+      thumbnailPath: `/thumbnails/${outputName}`,
+      thumbnailTime: null
+    };
+  } catch {
+    await fs.unlink(outputAbsPath).catch(() => {});
+    return null;
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+async function captureAutoThumbnail(absPath, videoId, durationSec) {
+  const ffmpegCapture = await captureAutoThumbnailWithFfmpeg(absPath, videoId, durationSec);
+  if (ffmpegCapture) {
+    return ffmpegCapture;
+  }
+
+  return captureAutoThumbnailWithQuickLook(absPath, videoId);
 }
 
 const upsertVideoStmt = db.prepare(`

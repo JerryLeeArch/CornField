@@ -108,9 +108,59 @@ function getLibraryRootOrThrow() {
   return path.resolve(libraryRoot);
 }
 
+function parseRating(value, fallback = null) {
+  if (value === undefined || value === null || value === '') {
+    return fallback;
+  }
+
+  const rating = Number(value);
+  if (!Number.isInteger(rating) || rating < 0 || rating > 5) {
+    return null;
+  }
+
+  return rating;
+}
+
+function buildRandomOrderBy(seedRaw) {
+  const modulus = 2147483647n;
+  const mask = Number(modulus);
+  const normalizedSeed = Number.isFinite(seedRaw) ? BigInt(Math.trunc(Math.abs(seedRaw))) : 0n;
+  let mix = normalizedSeed % modulus;
+
+  if (mix === 0n) {
+    mix = 1n;
+  }
+
+  const advanceMix = (value) => ((value * 48271n) + 12820163n) % modulus;
+
+  mix = advanceMix(mix);
+  const linearA = Number(mix | 1n);
+  mix = advanceMix(mix + (normalizedSeed / modulus) + 1n);
+  const quadraticA = Number(mix | 1n);
+  mix = advanceMix(mix + 97n);
+  const linearB = Number(mix | 1n);
+  mix = advanceMix(mix + 193n);
+  const quadraticB = Number(mix | 1n);
+  mix = advanceMix(mix + 389n);
+  const linearC = Number(mix | 1n);
+  mix = advanceMix(mix + 769n);
+  const quadraticC = Number(mix | 1n);
+  const offsetA = Number((normalizedSeed / modulus) % modulus);
+  const offsetB = Number(normalizedSeed % modulus);
+  const offsetC = Number((normalizedSeed % 1000003n) + 7n);
+
+  return `
+    (((v.id * ${linearA}) + (((v.id * v.id) & ${mask}) * ${quadraticA}) + ${offsetA}) & ${mask}),
+    ((((v.id + ${offsetB} + 1) * ${linearB}) + ((((v.id + 11) * (v.id + 11)) & ${mask}) * ${quadraticB})) & ${mask}),
+    (((((v.id * 31) + ${offsetC}) * ${linearC}) + ((((v.id + 23) * (v.id + 23)) & ${mask}) * ${quadraticC})) & ${mask}),
+    v.id DESC
+  `;
+}
+
 function serializeVideoRow(row) {
   const tags = row.tags_csv ? row.tags_csv.split(',').filter(Boolean) : [];
   const starrings = row.starrings_csv ? row.starrings_csv.split(',').filter(Boolean) : [];
+  const ratingCount = Number(row.rating_count || 0);
   const mediaPath = row.relative_path
     .split('/')
     .map((segment) => encodeURIComponent(segment))
@@ -132,6 +182,8 @@ function serializeVideoRow(row) {
     viewCount: row.view_count,
     thumbnailPath: row.thumbnail_path,
     thumbnailTime: row.thumbnail_time,
+    averageRating: ratingCount > 0 ? Number(row.average_rating) : null,
+    ratingCount,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     tags,
@@ -143,6 +195,14 @@ function serializeVideoRow(row) {
 let watcher = null;
 let scanInFlight = null;
 let pendingWatchScanTimer = null;
+const commentRatingStatsJoin = `
+  LEFT JOIN (
+    SELECT video_id, AVG(rating) AS average_rating, COUNT(*) AS rating_count
+    FROM comments
+    WHERE rated_at IS NOT NULL
+    GROUP BY video_id
+  ) cr ON cr.video_id = v.id
+`;
 
 async function runScan(libraryRootOverride = null) {
   if (scanInFlight) {
@@ -429,13 +489,14 @@ app.get('/api/videos', async (request) => {
   }
 
   const sort = String(query.sort || 'random');
+  const randomSeedRaw = Number(query.randomSeed);
   const orderBy = {
-    random: 'RANDOM()',
+    random: buildRandomOrderBy(randomSeedRaw),
     upload_desc: 'date(COALESCE(v.upload_date, v.original_created_at)) DESC, v.id DESC',
     upload_asc: 'date(COALESCE(v.upload_date, v.original_created_at)) ASC, v.id ASC',
     views_desc: 'v.view_count DESC, v.id DESC',
     recent_scan: 'v.last_scanned_at DESC, v.id DESC'
-  }[sort] || 'RANDOM()';
+  }[sort] || buildRandomOrderBy(randomSeedRaw);
 
   const whereSql = `WHERE ${whereClauses.join(' AND ')}`;
 
@@ -445,9 +506,12 @@ app.get('/api/videos', async (request) => {
     .prepare(`
       SELECT
         v.*,
+        MAX(cr.average_rating) AS average_rating,
+        MAX(cr.rating_count) AS rating_count,
         GROUP_CONCAT(DISTINCT t.name) AS tags_csv,
         GROUP_CONCAT(DISTINCT s.name) AS starrings_csv
       FROM videos v
+      ${commentRatingStatsJoin}
       LEFT JOIN video_tags vt ON vt.video_id = v.id
       LEFT JOIN tags t ON t.id = vt.tag_id
       LEFT JOIN video_starrings vs ON vs.video_id = v.id
@@ -544,9 +608,12 @@ app.get('/api/videos/:id', async (request, reply) => {
     .prepare(`
       SELECT
         v.*,
+        MAX(cr.average_rating) AS average_rating,
+        MAX(cr.rating_count) AS rating_count,
         GROUP_CONCAT(DISTINCT t.name) AS tags_csv,
         GROUP_CONCAT(DISTINCT s.name) AS starrings_csv
       FROM videos v
+      ${commentRatingStatsJoin}
       LEFT JOIN video_tags vt ON vt.video_id = v.id
       LEFT JOIN tags t ON t.id = vt.tag_id
       LEFT JOIN video_starrings vs ON vs.video_id = v.id
@@ -720,7 +787,9 @@ app.get('/api/videos/:id/comments', async (request, reply) => {
   }
 
   const comments = db
-    .prepare('SELECT id, video_id AS videoId, content, created_at AS createdAt, updated_at AS updatedAt FROM comments WHERE video_id = ? ORDER BY created_at DESC')
+    .prepare(
+      'SELECT id, video_id AS videoId, content, rating, rated_at AS ratedAt, created_at AS createdAt, updated_at AS updatedAt FROM comments WHERE video_id = ? ORDER BY created_at DESC'
+    )
     .all(videoId);
 
   return { items: comments };
@@ -732,13 +801,22 @@ app.post('/api/videos/:id/comments', async (request, reply) => {
     return reply.code(400).send({ error: 'Invalid video id' });
   }
 
-  const content = String(request.body?.content || '').trim();
-  if (!content) {
-    return reply.code(400).send({ error: 'Comment content is required.' });
+  const body = request.body || {};
+  const content = String(body.content || '').trim();
+  const hasRating = Object.hasOwn(body, 'rating') && body.rating !== null && body.rating !== '';
+  const rating = hasRating ? parseRating(body.rating) : 0;
+
+  if (hasRating && rating === null) {
+    return reply.code(400).send({ error: 'rating must be an integer between 0 and 5.' });
+  }
+  if (!content && !hasRating) {
+    return reply.code(400).send({ error: 'Enter a comment or choose a rating.' });
   }
 
   const now = isoNow();
-  const result = db.prepare('INSERT INTO comments(video_id, content, created_at, updated_at) VALUES (?, ?, ?, ?)').run(videoId, content, now, now);
+  const result = db
+    .prepare('INSERT INTO comments(video_id, content, rating, rated_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(videoId, content, rating, hasRating ? now : null, now, now);
 
   touchVideo(videoId);
 
@@ -751,17 +829,32 @@ app.put('/api/comments/:id', async (request, reply) => {
     return reply.code(400).send({ error: 'Invalid comment id' });
   }
 
-  const content = String(request.body?.content || '').trim();
-  if (!content) {
-    return reply.code(400).send({ error: 'Comment content is required.' });
-  }
-
-  const row = db.prepare('SELECT video_id FROM comments WHERE id = ?').get(id);
+  const body = request.body || {};
+  const row = db.prepare('SELECT video_id, content, rating, rated_at FROM comments WHERE id = ?').get(id);
   if (!row) {
     return reply.code(404).send({ error: 'Comment not found' });
   }
 
-  db.prepare('UPDATE comments SET content = ?, updated_at = ? WHERE id = ?').run(content, isoNow(), id);
+  const hasRatingUpdate = Object.hasOwn(body, 'rating');
+  const content = Object.hasOwn(body, 'content') ? String(body.content ?? '').trim() : row.content;
+  const nextHasRating = hasRatingUpdate ? body.rating !== null && body.rating !== '' : row.rated_at !== null;
+  const rating = nextHasRating ? parseRating(hasRatingUpdate ? body.rating : row.rating) : 0;
+
+  if (nextHasRating && rating === null) {
+    return reply.code(400).send({ error: 'rating must be an integer between 0 and 5.' });
+  }
+  if (!content && !nextHasRating) {
+    return reply.code(400).send({ error: 'Enter a comment or choose a rating.' });
+  }
+
+  const now = isoNow();
+  const previousHasRating = row.rated_at !== null;
+  const ratingChanged =
+    hasRatingUpdate &&
+    (nextHasRating !== previousHasRating || (nextHasRating && Number(row.rating) !== rating));
+  const ratedAt = nextHasRating ? (ratingChanged ? now : row.rated_at || now) : null;
+
+  db.prepare('UPDATE comments SET content = ?, rating = ?, rated_at = ?, updated_at = ? WHERE id = ?').run(content, rating, ratedAt, now, id);
   touchVideo(row.video_id);
 
   return { ok: true };
@@ -986,9 +1079,12 @@ app.get('/api/videos/:id/related', async (request, reply) => {
     .prepare(
       `SELECT
          v.*,
+         MAX(cr.average_rating) AS average_rating,
+         MAX(cr.rating_count) AS rating_count,
          GROUP_CONCAT(DISTINCT t.name) AS tags_csv,
          GROUP_CONCAT(DISTINCT s.name) AS starrings_csv
        FROM videos v
+       ${commentRatingStatsJoin}
        LEFT JOIN video_tags vt ON vt.video_id = v.id
        LEFT JOIN tags t ON t.id = vt.tag_id
        LEFT JOIN video_starrings vs ON vs.video_id = v.id

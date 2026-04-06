@@ -71,6 +71,46 @@
       </form>
     </dialog>
 
+    <dialog id="noteEditDialog" class="settings-dialog note-edit-dialog">
+      <form id="noteEditForm" method="dialog">
+        <h2>Edit Timeline Note</h2>
+        <label>
+          Timestamp (seconds)
+          <input id="noteEditTimestampInput" type="number" min="0" step="0.1" required />
+        </label>
+        <label>
+          Memo
+          <textarea id="noteEditMemoInput" placeholder="Memo for this timestamp" required></textarea>
+        </label>
+        <div class="dialog-actions">
+          <button type="button" id="noteEditUseCurrentBtn">Use Current Time</button>
+          <button type="button" id="noteEditCancelBtn">Cancel</button>
+          <button type="submit" class="primary">Save</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="commentEditDialog" class="settings-dialog comment-edit-dialog">
+      <form id="commentEditForm" method="dialog">
+        <h2>Edit Comment</h2>
+        <label>
+          Comment
+          <textarea id="commentEditContentInput" placeholder="Write a comment"></textarea>
+        </label>
+        <label>
+          Rating
+          <div id="commentEditRatingEditor" class="rating-editor">
+            <input id="commentEditRatingInput" type="hidden" data-rating-input />
+            <div id="commentEditRatingLabel" class="rating-label" data-rating-label>No rating</div>
+          </div>
+        </label>
+        <div class="dialog-actions">
+          <button type="button" id="commentEditCancelBtn">Cancel</button>
+          <button type="submit" class="primary">Save</button>
+        </div>
+      </form>
+    </dialog>
+
     <template id="libraryViewTemplate">
       <section class="library-toolbar">
         <div class="toolbar-grid">
@@ -88,7 +128,6 @@
             <option value="views_desc">Views (High to Low)</option>
             <option value="recent_scan">Recently Scanned</option>
           </select>
-          <button id="applyFiltersBtn" class="primary">Apply</button>
         </div>
         <div class="tag-scroller-wrap">
           <div id="tagScroller" class="tag-scroller"></div>
