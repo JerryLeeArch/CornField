@@ -10,13 +10,15 @@ mkdir -p data data/thumbnails
 
 if ! command -v node >/dev/null 2>&1; then
   echo "Node.js is required but was not found on this Mac."
-  echo "Install Node.js first, then run this launcher again."
+  echo "Opening the official Node.js download page..."
+  open "https://nodejs.org/en/download"
   exit 1
 fi
 
 if ! command -v npm >/dev/null 2>&1; then
   echo "npm is required but was not found on this Mac."
-  echo "Install Node.js first, then run this launcher again."
+  echo "Opening the official Node.js download page..."
+  open "https://nodejs.org/en/download"
   exit 1
 fi
 
