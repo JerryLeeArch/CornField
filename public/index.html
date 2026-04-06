@@ -100,18 +100,17 @@
 
     <dialog id="commentEditDialog" class="settings-dialog comment-edit-dialog">
       <form id="commentEditForm" method="dialog">
-        <h2>Edit Comment</h2>
+        <h2>Edit Review</h2>
         <label>
-          Comment
+          Review
           <textarea id="commentEditContentInput" placeholder="Write a comment"></textarea>
         </label>
-        <label>
-          Rating
+        <div class="comment-rating-field">
           <div id="commentEditRatingEditor" class="rating-editor">
             <input id="commentEditRatingInput" type="hidden" data-rating-input />
             <div id="commentEditRatingLabel" class="rating-label" data-rating-label>No rating</div>
           </div>
-        </label>
+        </div>
         <div class="dialog-actions">
           <button type="button" id="commentEditCancelBtn">Cancel</button>
           <button type="submit" class="primary">Save</button>

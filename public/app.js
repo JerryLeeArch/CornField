@@ -592,6 +592,10 @@ function getCommentRatingValue(comment) {
   return comment?.ratedAt ? clampRating(comment.rating) : null;
 }
 
+function getCommentDisplayDateTime(comment) {
+  return formatDateTime(comment?.ratedAt || comment?.createdAt);
+}
+
 function createRatingButtonsHtml(rating, buttonAttrs = '') {
   const safeRating = normalizeOptionalRating(rating);
   const starsHtml = Array.from({ length: 5 }, (_, index) => {
@@ -634,7 +638,7 @@ function syncRatingEditor(container, rating) {
 function createCommentRatingDisplayHtml(comment) {
   const rating = getCommentRatingValue(comment);
   if (rating === null) {
-    return '<div class="comment-rating-display muted">No rating</div>';
+    return '';
   }
 
   return `
@@ -643,6 +647,46 @@ function createCommentRatingDisplayHtml(comment) {
       <span class="rating-label">${rating}/5</span>
     </div>
   `;
+}
+
+function createCommentBodyHtml(comment) {
+  const hasContent = Boolean(comment?.content);
+  const ratingHtml = createCommentRatingDisplayHtml(comment);
+  const dateHtml = `
+    <div class="comment-meta">
+      <span class="muted">${escapeHtml(getCommentDisplayDateTime(comment))}</span>
+    </div>
+  `;
+
+  if (ratingHtml && hasContent) {
+    return `
+      <div class="comment-stack">
+        ${ratingHtml}
+        <div>${escapeHtml(comment.content)}</div>
+        ${dateHtml}
+      </div>
+    `;
+  }
+
+  if (ratingHtml) {
+    return `
+      <div class="comment-stack">
+        ${ratingHtml}
+        ${dateHtml}
+      </div>
+    `;
+  }
+
+  if (hasContent) {
+    return `
+      <div class="comment-stack">
+        <div>${escapeHtml(comment.content)}</div>
+        ${dateHtml}
+      </div>
+    `;
+  }
+
+  return dateHtml;
 }
 
 function createNotesListHtml(notes) {
@@ -672,7 +716,6 @@ function getCardRatingRowHtml(video, options = {}) {
     return `
       <div class="meta-row rating-row">
         <span class="muted">No ratings yet</span>
-        <span class="muted">0 ratings</span>
       </div>
     `;
   }
@@ -1094,12 +1137,7 @@ async function renderVideoView(videoId) {
       .map(
         (comment) => `
         <div class="comment-item" data-comment-id="${comment.id}">
-          <div>${comment.content ? escapeHtml(comment.content) : '<span class="muted">No comment text</span>'}</div>
-          <div class="comment-meta">
-            <span class="muted">Comment ${formatDateTime(comment.createdAt)}</span>
-            <span class="muted">${comment.ratedAt ? `Rated ${formatDateTime(comment.ratedAt)}` : 'Not rated yet'}</span>
-          </div>
-          ${createCommentRatingDisplayHtml(comment)}
+          ${createCommentBodyHtml(comment)}
           <div class="row-actions">
             <button data-comment-edit="${comment.id}">Edit</button>
             <button data-comment-delete="${comment.id}">Delete</button>
@@ -1139,7 +1177,6 @@ async function renderVideoView(videoId) {
           </div>
           <div class="meta-row rating-row" style="margin-top: .35rem;">
             <span class="${videoRatingCount ? 'rating-summary' : 'muted'}">${videoRatingText}</span>
-            <span>${videoRatingCount} rating${videoRatingCount === 1 ? '' : 's'}</span>
           </div>
           <div class="chips" style="margin-top: .6rem;">${tagsHtml}</div>
           <div class="chips" style="margin-top: .35rem;">${starringsHtml}</div>
@@ -1155,10 +1192,9 @@ async function renderVideoView(videoId) {
 
       <section class="section-panel" style="margin-top: 1rem;">
         <div class="panel-body">
-          <h3 class="section-title">Comments</h3>
+          <h3 class="section-title">Reviews</h3>
           <form id="commentForm" class="form-grid comments-editor" style="margin-top: .7rem;">
             <div class="comment-rating-field">
-              <span class="muted">Rating</span>
               <div id="commentRatingEditor" class="rating-editor">
                 ${createRatingButtonsHtml(null, 'data-comment-form-rating="1"')}
                 <input id="commentRatingInput" type="hidden" data-rating-input value="" />
@@ -1166,9 +1202,9 @@ async function renderVideoView(videoId) {
               </div>
             </div>
             <textarea id="commentInput" class="wide-comment-input" placeholder="Write a comment (optional if you leave only a rating)"></textarea>
-            <button type="submit" class="primary">Add Comment</button>
+            <button type="submit" class="primary">Add Review</button>
           </form>
-          <div class="list-block" id="commentsList">${commentsHtml || '<div class="muted">No comments yet.</div>'}</div>
+          <div class="list-block" id="commentsList">${commentsHtml || '<div class="muted">No reviews yet.</div>'}</div>
         </div>
       </section>
 
@@ -1758,7 +1794,7 @@ async function renderVideoView(videoId) {
       const content = input.value.trim();
       const rating = normalizeOptionalRating(ratingInput.value);
       if (!content && rating === null) {
-        showToast('Write a comment or choose a rating.', true);
+        showToast('Write a review or choose a rating.', true);
         return;
       }
 
@@ -1770,7 +1806,7 @@ async function renderVideoView(videoId) {
             rating
           })
         });
-        showToast('Comment added');
+        showToast('Review added');
         rerenderPreservingPlayback();
       } catch (error) {
         showToast(error.message, true);
@@ -1789,11 +1825,11 @@ async function renderVideoView(videoId) {
     document.querySelectorAll('[data-comment-delete]').forEach((btn) => {
       btn.addEventListener('click', async (event) => {
         const id = Number(event.currentTarget.getAttribute('data-comment-delete'));
-        if (!confirm('Delete this comment?')) return;
+        if (!confirm('Delete this review?')) return;
 
         try {
           await api(`/api/comments/${id}`, { method: 'DELETE' });
-          showToast('Comment deleted');
+          showToast('Review deleted');
           rerenderPreservingPlayback();
         } catch (error) {
           showToast(error.message, true);
@@ -2349,7 +2385,7 @@ function setupGlobalEvents() {
     const rating = normalizeOptionalRating(commentEditRatingInput.value);
 
     if (!content && rating === null) {
-      showToast('Write a comment or choose a rating.', true);
+      showToast('Write a review or choose a rating.', true);
       return;
     }
 
@@ -2362,7 +2398,7 @@ function setupGlobalEvents() {
         })
       });
       closeCommentEditDialog();
-      showToast('Comment updated');
+      showToast('Review updated');
       rerenderPreservingPlayback();
     } catch (error) {
       showToast(error.message, true);
