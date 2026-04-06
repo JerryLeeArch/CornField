@@ -5,33 +5,13 @@ It keeps your real files on disk, stores app state locally, and gives you a fast
 
 No sample media is bundled in this repository. You point CornField at your own video folder on first use.
 
-## First-Time Setup
-
-1. Install Node.js 20+.
-2. Run `npm install` once, or on macOS just double-click `openCornField.command`.
-3. Open `Settings` in the app.
-4. Set `Library Folder Path` to your real video folder.
-5. Click `Scan Library`, review the preview, then continue.
-6. Go back to `Home` and start browsing.
-
-## UI Quick Guide
-
-- `Home`: search, sort, quality filters, tags, and starring filters for your library.
-- `Video cards`: open the video page, jump through tags/starring, and see average rating at a glance.
-- `Video page`: player controls, theater/fullscreen, related videos, timeline notes, and comments.
-- `Comments`: leave text only, rating only, or both.
-- `Settings`: choose the library folder and run scans when your library changes.
-
 ## Requirements
 
 - Node.js 20+ recommended
-- macOS, Linux, or Windows with a local browser
+- macOS
 - A local or mounted video library folder you want to index
-- `ffmpeg` is optional for thumbnail capture; on macOS CornField can also fall back to Quick Look thumbnail generation
 
 ## Launching
-
-### macOS
 
 Double-click `openCornField.command`.
 
@@ -48,21 +28,11 @@ Make executable once if needed:
 chmod +x openCornField.command
 ```
 
-### Terminal
+## First-Time Setup
 
-```bash
-npm install
-npm run dev
-```
-
-Open: [http://127.0.0.1:4300](http://127.0.0.1:4300)
-
-## What Stays Local
-
-- Your media files stay in their original folders and are not copied by default.
-- App data is stored in `data/videoplayer.db`.
-- Generated or uploaded thumbnails are stored in `data/thumbnails/`.
-- `data/` is gitignored so your personal library state does not get committed to GitHub.
+1. Open `Settings`.
+2. Set `Library Folder Path` to your real video folder.
+3. Click `Scan Library`.
 
 ## Scan Behavior
 
@@ -85,6 +55,24 @@ Open: [http://127.0.0.1:4300](http://127.0.0.1:4300)
 - Use keyboard shortcuts and persistent player preferences
 
 ## Technical Notes
+
+### Manual Launch
+
+If you are developing locally or launching without the macOS helper:
+
+```bash
+npm install
+npm run dev
+```
+
+Open: [http://127.0.0.1:4300](http://127.0.0.1:4300)
+
+### Local Data
+
+- Your media files stay in their original folders and are not copied by default.
+- App data is stored in `data/videoplayer.db`.
+- Generated or uploaded thumbnails are stored in `data/thumbnails/`.
+- `data/` is gitignored so your personal library state does not get committed to GitHub.
 
 ### Tech Stack
 
