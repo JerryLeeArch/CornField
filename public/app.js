@@ -1106,6 +1106,7 @@ async function renderVideoView(videoId) {
             <div class="control-row">
               <button id="playPauseBtn">Play</button>
               <button id="fullscreenBtn">Fullscreen</button>
+              <button id="addMarkerBtn">Add Marker</button>
               <button id="muteBtn">Mute</button>
               <input id="volumeRange" class="volume-slider" type="range" min="0" max="1" step="0.01" value="1" />
               <span id="timeLabel" class="time-label">00:00 / --:--</span>
@@ -1230,6 +1231,7 @@ async function renderVideoView(videoId) {
     const playerControls = document.getElementById('playerControls');
     const playPauseBtn = document.getElementById('playPauseBtn');
     const fullscreenBtn = document.getElementById('fullscreenBtn');
+    const addMarkerBtn = document.getElementById('addMarkerBtn');
     const muteBtn = document.getElementById('muteBtn');
     const volumeRange = document.getElementById('volumeRange');
     const progressRange = document.getElementById('progressRange');
@@ -1736,6 +1738,24 @@ async function renderVideoView(videoId) {
 
     bindMarkerTimeInput(noteTimestampInput, () => videoEl.currentTime);
 
+    async function createMarker({ timestampSec, memo }) {
+      if (!Number.isFinite(timestampSec) || timestampSec < 0) {
+        showToast('Enter a valid time.', true);
+        return;
+      }
+
+      try {
+        await api(`/api/videos/${videoId}/notes`, {
+          method: 'POST',
+          body: JSON.stringify({ timestampSec, memo: normalizeMarkerLabel(memo) })
+        });
+        showToast('Marker added');
+        rerenderPreservingPlayback();
+      } catch (error) {
+        showToast(error.message, true);
+      }
+    }
+
     const submitMarkerOnEnter = (event) => {
       if (event.key === 'Enter' && !event.shiftKey && !event.metaKey && !event.ctrlKey && !event.altKey) {
         event.preventDefault();
@@ -1746,25 +1766,20 @@ async function renderVideoView(videoId) {
     noteTimestampInput.addEventListener('keydown', submitMarkerOnEnter);
     noteMemoInput.addEventListener('keydown', submitMarkerOnEnter);
 
+    addMarkerBtn.addEventListener('click', async () => {
+      await createMarker({
+        timestampSec: Number(videoEl.currentTime || 0),
+        memo: noteMemoInput.value
+      });
+    });
+
     noteForm.addEventListener('submit', async (event) => {
       event.preventDefault();
       const timestampSec = parseMarkerTimeValue(noteTimestampInput.value, { fallback: videoEl.currentTime || 0 });
-      const memo = normalizeMarkerLabel(noteMemoInput.value);
-      if (!Number.isFinite(timestampSec) || timestampSec < 0) {
-        showToast('Enter a valid time.', true);
-        return;
-      }
-
-      try {
-        await api(`/api/videos/${videoId}/notes`, {
-          method: 'POST',
-          body: JSON.stringify({ timestampSec, memo })
-        });
-        showToast('Marker added');
-        rerenderPreservingPlayback();
-      } catch (error) {
-        showToast(error.message, true);
-      }
+      await createMarker({
+        timestampSec,
+        memo: noteMemoInput.value
+      });
     });
 
     document.querySelectorAll('[data-note-jump]').forEach((btn) => {
