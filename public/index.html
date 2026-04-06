@@ -4,12 +4,17 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>CornField</title>
+    <link rel="preload" href="/assets/brand/CornFieldLogo1.png?v=20260407-2" as="image" type="image/png" />
+    <link rel="icon" href="/assets/brand/CornFieldLogo1-32.png?v=20260407-2" type="image/png" sizes="32x32" />
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
     <div id="app">
       <header class="topbar">
-        <div class="brand" id="goLibrary">CornField</div>
+        <div class="brand" id="goLibrary">
+          <img class="brand-logo" src="/assets/brand/CornFieldLogo1.png?v=20260407-2" alt="CornField logo" width="160" height="160" loading="eager" fetchpriority="high" decoding="sync" />
+          <span class="brand-text">CornField</span>
+        </div>
         <nav class="nav-links">
           <button id="navLibrary" class="link-btn">Library</button>
           <button id="navStarrings" class="link-btn">Starring</button>
