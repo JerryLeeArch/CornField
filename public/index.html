@@ -27,10 +27,6 @@
       <form id="settingsForm" method="dialog">
         <h2>Settings</h2>
         <label>
-          Library Folder Path
-          <input id="libraryRootInput" type="text" placeholder="/Users/you/Videos" required />
-        </label>
-        <label>
           Arrow Key Skip Seconds
           <select id="skipSecondsInput">
             <option value="5">5 seconds</option>
@@ -39,8 +35,13 @@
           </select>
         </label>
         <label>
-          Videos Per Page
-          <input id="pageSizeInput" type="number" min="8" max="100" step="1" />
+          Library Rows Per Page
+          <select id="libraryRowsInput">
+            <option value="2">2 rows</option>
+            <option value="3">3 rows</option>
+            <option value="4">4 rows</option>
+            <option value="5">5 rows</option>
+          </select>
         </label>
         <label>
           Playbar Auto-hide Delay
@@ -53,11 +54,14 @@
           </select>
         </label>
         <label>
-          Related Videos Max Count
-          <input id="relatedLimitInput" type="number" min="1" max="48" step="1" />
+          Library Folder Path
+          <div class="settings-path-row">
+            <input id="libraryRootInput" type="text" placeholder="/Users/you/Videos" required />
+            <button type="button" id="browseLibraryRootBtn" class="settings-browse-btn">Browse</button>
+            <button type="button" id="scanNowBtn" class="primary settings-scan-btn">Scan Library</button>
+          </div>
         </label>
         <div class="dialog-actions">
-          <button type="button" id="scanNowBtn" class="primary">Scan Library</button>
           <button type="submit" class="primary">Save</button>
           <button type="button" id="closeSettings">Close</button>
         </div>
