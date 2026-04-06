@@ -129,9 +129,8 @@ export function getSettingsObject() {
 
 export function ensureDefaultSettings() {
   if (getSetting('skipSeconds') === null) setSetting('skipSeconds', '10');
-  if (getSetting('pageSize') === null) setSetting('pageSize', '24');
+  if (getSetting('libraryRows') === null) setSetting('libraryRows', '3');
   if (getSetting('controlsHideMs') === null) setSetting('controlsHideMs', '2500');
-  if (getSetting('relatedLimit') === null) setSetting('relatedLimit', '12');
 }
 
 const insertTagStmt = db.prepare('INSERT OR IGNORE INTO tags(name) VALUES (?)');

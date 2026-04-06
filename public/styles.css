@@ -842,6 +842,31 @@ textarea {
   font-size: 0.92rem;
 }
 
+.settings-path-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.settings-path-row input {
+  min-width: 0;
+}
+
+.settings-browse-btn {
+  white-space: nowrap;
+}
+
+.settings-scan-btn {
+  white-space: nowrap;
+}
+
+@media (max-width: 720px) {
+  .settings-path-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 .dialog-actions {
   display: flex;
   gap: 0.4rem;

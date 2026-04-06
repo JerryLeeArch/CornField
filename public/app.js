@@ -2,10 +2,10 @@ const mainEl = document.getElementById('main');
 const settingsDialog = document.getElementById('settingsDialog');
 const settingsForm = document.getElementById('settingsForm');
 const libraryRootInput = document.getElementById('libraryRootInput');
+const browseLibraryRootBtn = document.getElementById('browseLibraryRootBtn');
 const skipSecondsInput = document.getElementById('skipSecondsInput');
-const pageSizeInput = document.getElementById('pageSizeInput');
+const libraryRowsInput = document.getElementById('libraryRowsInput');
 const controlsHideMsInput = document.getElementById('controlsHideMsInput');
-const relatedLimitInput = document.getElementById('relatedLimitInput');
 const scanNowBtn = document.getElementById('scanNowBtn');
 const scanProceedBtn = document.getElementById('scanProceedBtn');
 const scanCancelBtn = document.getElementById('scanCancelBtn');
@@ -54,7 +54,8 @@ const state = {
   pendingScanRoot: '',
   layout: {
     libraryColumns: null,
-    libraryPageSize: null
+    libraryPageSize: null,
+    relatedLimit: null
   },
   libraryRandomSeed: Date.now(),
   pendingVideoPlayback: null
@@ -284,10 +285,9 @@ async function loadSettings() {
 function updateSettingsDialogInputs() {
   libraryRootInput.value = state.settings?.libraryRoot || '';
   skipSecondsInput.value = String(state.settings?.skipSeconds || 10);
-  pageSizeInput.value = String(state.settings?.pageSize || 24);
+  libraryRowsInput.value = String(state.settings?.libraryRows || 3);
   const controlsHideValue = String(state.settings?.controlsHideMs ?? 2500);
   controlsHideMsInput.value = controlsHideMsInput.querySelector(`option[value="${controlsHideValue}"]`) ? controlsHideValue : '2500';
-  relatedLimitInput.value = String(state.settings?.relatedLimit || 12);
   hideScanPreview();
 }
 
@@ -295,9 +295,8 @@ async function saveSettingsFromDialog() {
   const payload = {
     libraryRoot: libraryRootInput.value.trim(),
     skipSeconds: Number(skipSecondsInput.value),
-    pageSize: Number(pageSizeInput.value),
-    controlsHideMs: Number(controlsHideMsInput.value),
-    relatedLimit: Number(relatedLimitInput.value)
+    libraryRows: Number(libraryRowsInput.value),
+    controlsHideMs: Number(controlsHideMsInput.value)
   };
 
   const result = await api('/api/settings', {
@@ -307,6 +306,34 @@ async function saveSettingsFromDialog() {
 
   state.settings = result.settings;
   showToast('Settings saved');
+}
+
+async function browseForLibraryRoot() {
+  const previousLabel = browseLibraryRootBtn.textContent;
+  browseLibraryRootBtn.disabled = true;
+  browseLibraryRootBtn.textContent = 'Opening...';
+
+  try {
+    const result = await api('/api/system/select-folder', {
+      method: 'POST',
+      body: JSON.stringify({
+        initialPath: libraryRootInput.value.trim()
+      })
+    });
+
+    if (result?.cancelled) {
+      return;
+    }
+
+    if (result?.path) {
+      libraryRootInput.value = result.path;
+    }
+  } catch (error) {
+    showToast(error.message, true);
+  } finally {
+    browseLibraryRootBtn.disabled = false;
+    browseLibraryRootBtn.textContent = previousLabel;
+  }
 }
 
 function hideScanPreview() {
@@ -587,21 +614,23 @@ function getGridColumnCount(gridEl, minCardWidth) {
 }
 
 function getEffectiveLibraryPageSize(videoGrid) {
-  const configuredPageSizeRaw = Number(state.settings?.pageSize || 24);
-  const configuredPageSize = Number.isInteger(configuredPageSizeRaw) ? Math.max(8, configuredPageSizeRaw) : 24;
+  const configuredRowsRaw = Number(state.settings?.libraryRows || 3);
+  const configuredRows = Number.isInteger(configuredRowsRaw) ? Math.max(1, Math.min(8, configuredRowsRaw)) : 3;
   const columns = getGridColumnCount(videoGrid, 208);
+  return Math.max(1, Math.min(100, columns * configuredRows));
+}
 
-  if (columns <= 1) {
-    return configuredPageSize;
-  }
-
-  return Math.min(100, columns * Math.max(1, Math.ceil(configuredPageSize / columns)));
+function getRelatedVideoLimit(gridEl = null) {
+  const minCardWidth = 190;
+  const fallbackWidth = Math.max(0, (mainEl.clientWidth || window.innerWidth || 0) - 28);
+  const columns = gridEl ? getGridColumnCount(gridEl, minCardWidth) : Math.max(1, Math.floor((fallbackWidth + 12) / (minCardWidth + 12)));
+  return Math.max(2, Math.min(48, columns * 2));
 }
 
 function buildLibraryQuery(options = {}) {
   const q = new URLSearchParams();
   q.set('page', String(state.page));
-  q.set('pageSize', String(options.pageSize || state.settings?.pageSize || 24));
+  q.set('pageSize', String(options.pageSize || 24));
 
   if (state.filters.q) q.set('q', state.filters.q);
   if (state.filters.qualityMin) q.set('qualityMin', state.filters.qualityMin);
@@ -834,14 +863,10 @@ async function renderVideoView(videoId) {
   mainEl.innerHTML = '<div class="status">Loading video...</div>';
 
   try {
-    const relatedLimit = Number(state.settings?.relatedLimit || 12);
-    const relatedLimitSafe = Number.isInteger(relatedLimit) ? Math.max(1, Math.min(48, relatedLimit)) : 12;
-
-    const [videoRes, commentsRes, notesRes, relatedRes] = await Promise.all([
+    const [videoRes, commentsRes, notesRes] = await Promise.all([
       api(`/api/videos/${videoId}`),
       api(`/api/videos/${videoId}/comments`),
-      api(`/api/videos/${videoId}/notes`),
-      api(`/api/videos/${videoId}/related?limit=${relatedLimitSafe}`)
+      api(`/api/videos/${videoId}/notes`)
     ]);
 
     if (token !== currentRenderToken) return;
@@ -849,7 +874,6 @@ async function renderVideoView(videoId) {
     const video = videoRes.video;
     const comments = commentsRes.items || [];
     const notes = notesRes.items || [];
-    const related = relatedRes.items || [];
     const playbackToRestore = state.pendingVideoPlayback?.videoId === videoId ? state.pendingVideoPlayback : null;
     if (playbackToRestore) {
       state.pendingVideoPlayback = null;
@@ -1028,15 +1052,9 @@ async function renderVideoView(videoId) {
     bindLibraryToolbar({ navigateToLibrary: true });
 
     const relatedGrid = document.getElementById('relatedGrid');
-    if (related.length === 0) {
-      relatedGrid.innerHTML = '<div class="muted">No related videos found.</div>';
-    } else {
-      related.forEach((rv, index) => {
-        const card = createRelatedCard(rv);
-        card.style.setProperty('--stagger', String(index));
-        relatedGrid.appendChild(card);
-      });
-    }
+    relatedGrid.innerHTML = '<div class="muted">Loading related videos...</div>';
+    const relatedLimit = getRelatedVideoLimit(relatedGrid);
+    state.layout.relatedLimit = relatedLimit;
 
     const videoEl = document.getElementById('videoEl');
     const playerShell = document.getElementById('playerShell');
@@ -1049,6 +1067,28 @@ async function renderVideoView(videoId) {
     const progressRange = document.getElementById('progressRange');
     const noteMarkerLayer = document.getElementById('noteMarkerLayer');
     const timeLabel = document.getElementById('timeLabel');
+
+    const relatedPromise = api(`/api/videos/${videoId}/related?limit=${relatedLimit}`)
+      .then((relatedRes) => {
+        if (token !== currentRenderToken) return;
+
+        const related = relatedRes.items || [];
+        if (related.length === 0) {
+          relatedGrid.innerHTML = '<div class="muted">No related videos found.</div>';
+          return;
+        }
+
+        relatedGrid.innerHTML = '';
+        related.forEach((rv, index) => {
+          const card = createRelatedCard(rv);
+          card.style.setProperty('--stagger', String(index));
+          relatedGrid.appendChild(card);
+        });
+      })
+      .catch((error) => {
+        if (token !== currentRenderToken) return;
+        relatedGrid.innerHTML = `<div class="warning error">${escapeHtml(error.message)}</div>`;
+      });
 
     let hideTimer = null;
     const controlsHideMsRaw = Number(state.settings?.controlsHideMs ?? 2500);
@@ -1634,6 +1674,8 @@ async function renderVideoView(videoId) {
       if (hideTimer) clearTimeout(hideTimer);
       videoEl.pause();
     });
+
+    await relatedPromise;
   } catch (error) {
     if (token !== currentRenderToken) return;
     mainEl.innerHTML = `<div class="warning error">${escapeHtml(error.message)}</div>`;
@@ -1925,6 +1967,10 @@ function setupGlobalEvents() {
     settingsDialog.close();
   });
 
+  browseLibraryRootBtn.addEventListener('click', async () => {
+    await browseForLibraryRoot();
+  });
+
   settingsForm.addEventListener('submit', async (event) => {
     event.preventDefault();
 
@@ -2122,6 +2168,19 @@ function setupGlobalEvents() {
     }
 
     libraryResizeTimer = setTimeout(() => {
+      if (state.route?.name === 'video') {
+        const relatedGrid = document.getElementById('relatedGrid');
+        if (!relatedGrid) {
+          return;
+        }
+
+        const nextRelatedLimit = getRelatedVideoLimit(relatedGrid);
+        if (nextRelatedLimit !== state.layout.relatedLimit) {
+          rerenderPreservingPlayback();
+        }
+        return;
+      }
+
       if (!['library', 'tag', 'starring'].includes(state.route?.name)) {
         return;
       }

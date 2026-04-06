@@ -1,6 +1,8 @@
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { pipeline } from 'node:stream/promises';
 import Fastify from 'fastify';
@@ -25,6 +27,7 @@ const __dirname = path.dirname(__filename);
 const projectRoot = path.resolve(__dirname, '..');
 const publicRoot = path.join(projectRoot, 'public');
 const thumbnailRoot = path.join(projectRoot, 'data', 'thumbnails');
+const execFileAsync = promisify(execFile);
 
 if (!fs.existsSync(thumbnailRoot)) {
   fs.mkdirSync(thumbnailRoot, { recursive: true });
@@ -119,6 +122,48 @@ function parseRating(value, fallback = null) {
   }
 
   return rating;
+}
+
+function toAppleScriptString(value) {
+  return `"${String(value).replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"`;
+}
+
+async function selectFolderFromFinder(initialPath = '') {
+  if (process.platform !== 'darwin') {
+    const error = new Error('Finder folder picker is currently available on macOS only.');
+    error.statusCode = 501;
+    throw error;
+  }
+
+  const trimmedInitialPath = String(initialPath || '').trim();
+  let defaultLocationClause = '';
+
+  if (trimmedInitialPath) {
+    const resolvedInitialPath = path.resolve(trimmedInitialPath);
+    try {
+      const stat = await fsp.stat(resolvedInitialPath);
+      if (stat.isDirectory()) {
+        defaultLocationClause = ` default location POSIX file ${toAppleScriptString(resolvedInitialPath)}`;
+      }
+    } catch {
+      // Ignore invalid initial path and fall back to Finder's default location.
+    }
+  }
+
+  const script = [
+    `set chosenFolder to choose folder with prompt ${toAppleScriptString('Select your video library folder')}${defaultLocationClause}`,
+    'POSIX path of chosenFolder'
+  ];
+
+  try {
+    const { stdout } = await execFileAsync('osascript', script.flatMap((line) => ['-e', line]));
+    return String(stdout || '').trim();
+  } catch (error) {
+    if (/user canceled/i.test(String(error.stderr || error.message || ''))) {
+      return null;
+    }
+    throw error;
+  }
 }
 
 function buildRandomOrderBy(seedRaw) {
@@ -273,10 +318,23 @@ app.get('/api/settings', async () => {
   return {
     libraryRoot: settings.libraryRoot || '',
     skipSeconds: Number(settings.skipSeconds || 10),
-    pageSize: Number(settings.pageSize || 24),
-    controlsHideMs: Number(settings.controlsHideMs || 2500),
-    relatedLimit: Number(settings.relatedLimit || 12)
+    libraryRows: Number(settings.libraryRows || 3),
+    controlsHideMs: Number(settings.controlsHideMs || 2500)
   };
+});
+
+app.post('/api/system/select-folder', async (request, reply) => {
+  try {
+    const selectedPath = await selectFolderFromFinder(request.body?.initialPath || '');
+    return {
+      ok: true,
+      cancelled: !selectedPath,
+      path: selectedPath || ''
+    };
+  } catch (error) {
+    const statusCode = Number(error.statusCode) || 500;
+    return reply.code(statusCode).send({ error: error.message || 'Could not open Finder folder picker.' });
+  }
 });
 
 app.put('/api/settings', async (request, reply) => {
@@ -311,13 +369,13 @@ app.put('/api/settings', async (request, reply) => {
     updates.push('skipSeconds');
   }
 
-  if (Object.hasOwn(body, 'pageSize')) {
-    const value = Number(body.pageSize);
-    if (!Number.isInteger(value) || value < 8 || value > 100) {
-      return reply.code(400).send({ error: 'pageSize must be an integer between 8 and 100.' });
+  if (Object.hasOwn(body, 'libraryRows')) {
+    const value = Number(body.libraryRows);
+    if (!Number.isInteger(value) || value < 1 || value > 8) {
+      return reply.code(400).send({ error: 'libraryRows must be an integer between 1 and 8.' });
     }
-    setSetting('pageSize', String(value));
-    updates.push('pageSize');
+    setSetting('libraryRows', String(value));
+    updates.push('libraryRows');
   }
 
   if (Object.hasOwn(body, 'controlsHideMs')) {
@@ -327,15 +385,6 @@ app.put('/api/settings', async (request, reply) => {
     }
     setSetting('controlsHideMs', String(value));
     updates.push('controlsHideMs');
-  }
-
-  if (Object.hasOwn(body, 'relatedLimit')) {
-    const value = Number(body.relatedLimit);
-    if (!Number.isInteger(value) || value < 1 || value > 48) {
-      return reply.code(400).send({ error: 'relatedLimit must be an integer between 1 and 48.' });
-    }
-    setSetting('relatedLimit', String(value));
-    updates.push('relatedLimit');
   }
 
   if (updates.includes('libraryRoot')) {
@@ -348,9 +397,8 @@ app.put('/api/settings', async (request, reply) => {
     settings: {
       libraryRoot: getSetting('libraryRoot', ''),
       skipSeconds: Number(getSetting('skipSeconds', 10)),
-      pageSize: Number(getSetting('pageSize', 24)),
-      controlsHideMs: Number(getSetting('controlsHideMs', 2500)),
-      relatedLimit: Number(getSetting('relatedLimit', 12))
+      libraryRows: Number(getSetting('libraryRows', 3)),
+      controlsHideMs: Number(getSetting('controlsHideMs', 2500))
     }
   };
 });
@@ -419,7 +467,7 @@ app.post('/api/library/scan/preview', async (request, reply) => {
 app.get('/api/videos', async (request) => {
   const query = request.query || {};
   const page = Math.max(1, Number(query.page || 1));
-  const pageSize = Math.min(100, Math.max(8, Number(query.pageSize || getSetting('pageSize', 24))));
+  const pageSize = Math.min(100, Math.max(1, Number(query.pageSize || 24)));
   const offset = (page - 1) * pageSize;
 
   const whereClauses = ["v.is_missing = 0", "v.file_name NOT LIKE '._%'"];
@@ -1042,9 +1090,7 @@ app.post('/api/videos/:id/thumbnail/capture', async (request, reply) => {
 
 app.get('/api/videos/:id/related', async (request, reply) => {
   const videoId = Number(request.params.id);
-  const configuredLimit = Number(getSetting('relatedLimit', 12));
-  const defaultLimit = Number.isInteger(configuredLimit) ? configuredLimit : 12;
-  const limit = Math.max(1, Math.min(48, Number(request.query?.limit || defaultLimit)));
+  const limit = Math.max(1, Math.min(48, Number(request.query?.limit || 12)));
 
   if (!Number.isInteger(videoId) || videoId <= 0) {
     return reply.code(400).send({ error: 'Invalid video id' });

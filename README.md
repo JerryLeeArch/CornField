@@ -40,6 +40,8 @@ It will:
 2. Start the local server
 3. Open CornField in your browser
 
+If macOS blocks the first launch, open `System Settings > Privacy & Security` and click `Open Anyway`.
+
 Make executable once if needed:
 
 ```bash
