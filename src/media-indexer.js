@@ -334,7 +334,6 @@ export async function scanLibrary(libraryRoot) {
   const startAt = isoNow();
   const files = await walkVideoFiles(root);
   const diff = calculateScanDiff(files);
-  const newFileSet = new Set(diff.addedFiles.map((file) => file.relative));
   let autoThumbnailsCreated = 0;
 
   for (const file of files) {
@@ -355,10 +354,6 @@ export async function scanLibrary(libraryRoot) {
       scannedAt: startAt,
       now
     });
-
-    if (!newFileSet.has(file.relative)) {
-      continue;
-    }
 
     const row = selectVideoByRelativePathStmt.get(file.relative);
     if (!row?.id || row.thumbnailPath) {
