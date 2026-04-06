@@ -3,6 +3,7 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
+import ffmpegPathStatic from 'ffmpeg-static';
 import ffprobe from 'ffprobe-static';
 import { db, isoNow } from './db.js';
 
@@ -107,6 +108,16 @@ let quickLookPathCache;
 async function resolveFfmpegPath() {
   if (ffmpegPathCache !== undefined) {
     return ffmpegPathCache;
+  }
+
+  if (ffmpegPathStatic) {
+    try {
+      await fs.access(ffmpegPathStatic);
+      ffmpegPathCache = ffmpegPathStatic;
+      return ffmpegPathCache;
+    } catch {
+      // continue to other candidates
+    }
   }
 
   const ffprobePath = ffprobe?.path;
@@ -323,7 +334,6 @@ export async function scanLibrary(libraryRoot) {
   const startAt = isoNow();
   const files = await walkVideoFiles(root);
   const diff = calculateScanDiff(files);
-  const newFileSet = new Set(diff.addedFiles.map((file) => file.relative));
   let autoThumbnailsCreated = 0;
 
   for (const file of files) {
@@ -344,10 +354,6 @@ export async function scanLibrary(libraryRoot) {
       scannedAt: startAt,
       now
     });
-
-    if (!newFileSet.has(file.relative)) {
-      continue;
-    }
 
     const row = selectVideoByRelativePathStmt.get(file.relative);
     if (!row?.id || row.thumbnailPath) {
