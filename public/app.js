@@ -291,13 +291,36 @@ function updateSettingsDialogInputs() {
   hideScanPreview();
 }
 
-async function saveSettingsFromDialog() {
-  const payload = {
+function buildSettingsPayload() {
+  return {
     libraryRoot: libraryRootInput.value.trim(),
     skipSeconds: Number(skipSecondsInput.value),
     libraryRows: Number(libraryRowsInput.value),
     controlsHideMs: Number(controlsHideMsInput.value)
   };
+}
+
+function settingsPayloadMatchesState(payload) {
+  if (!state.settings) return false;
+
+  return (
+    payload.libraryRoot === String(state.settings.libraryRoot || '') &&
+    payload.skipSeconds === Number(state.settings.skipSeconds || 10) &&
+    payload.libraryRows === Number(state.settings.libraryRows || 3) &&
+    payload.controlsHideMs === Number(state.settings.controlsHideMs ?? 2500)
+  );
+}
+
+async function persistSettingsFromDialog() {
+  const payload = buildSettingsPayload();
+
+  if (!payload.libraryRoot) {
+    throw new Error('Please enter Library Folder Path.');
+  }
+
+  if (settingsPayloadMatchesState(payload)) {
+    return false;
+  }
 
   const result = await api('/api/settings', {
     method: 'PUT',
@@ -305,7 +328,20 @@ async function saveSettingsFromDialog() {
   });
 
   state.settings = result.settings;
-  showToast('Settings saved');
+  hideScanPreview();
+  return true;
+}
+
+async function autosaveSettingsAndRefresh() {
+  const changed = await persistSettingsFromDialog();
+  if (!changed) return;
+
+  if (state.route?.name === 'video') {
+    rerenderPreservingPlayback();
+    return;
+  }
+
+  renderRoute();
 }
 
 async function browseForLibraryRoot() {
@@ -327,9 +363,11 @@ async function browseForLibraryRoot() {
 
     if (result?.path) {
       libraryRootInput.value = result.path;
+      await autosaveSettingsAndRefresh();
     }
   } catch (error) {
     showToast(error.message, true);
+    updateSettingsDialogInputs();
   } finally {
     browseLibraryRootBtn.disabled = false;
     browseLibraryRootBtn.textContent = previousLabel;
@@ -1971,18 +2009,31 @@ function setupGlobalEvents() {
     await browseForLibraryRoot();
   });
 
-  settingsForm.addEventListener('submit', async (event) => {
-    event.preventDefault();
-
+  const autosaveSettingsHandler = async () => {
     try {
-      await saveSettingsFromDialog();
-      hideScanPreview();
-      settingsDialog.close();
-      state.page = 1;
-      renderRoute();
+      await autosaveSettingsAndRefresh();
     } catch (error) {
       showToast(error.message, true);
+      updateSettingsDialogInputs();
     }
+  };
+
+  skipSecondsInput.addEventListener('change', autosaveSettingsHandler);
+  libraryRowsInput.addEventListener('change', autosaveSettingsHandler);
+  controlsHideMsInput.addEventListener('change', autosaveSettingsHandler);
+  libraryRootInput.addEventListener('change', autosaveSettingsHandler);
+  libraryRootInput.addEventListener('keydown', async (event) => {
+    if (event.key !== 'Enter') return;
+    event.preventDefault();
+    await autosaveSettingsHandler();
+    libraryRootInput.blur();
+  });
+  libraryRootInput.addEventListener('input', () => {
+    hideScanPreview();
+  });
+
+  settingsForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
   });
 
   noteEditUseCurrentBtn.addEventListener('click', () => {
