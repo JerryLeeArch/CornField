@@ -22,7 +22,7 @@ if ! command -v npm >/dev/null 2>&1; then
   exit 1
 fi
 
-if [ ! -d "node_modules" ]; then
+if [ ! -d "node_modules" ] || [ ! -d "node_modules/ffmpeg-static" ]; then
   echo "Installing dependencies..."
   npm install
 fi

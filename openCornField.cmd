@@ -26,7 +26,11 @@ if errorlevel 1 (
   exit /b 1
 )
 
-if not exist "node_modules" (
+set "NEED_INSTALL="
+if not exist "node_modules" set "NEED_INSTALL=1"
+if not exist "node_modules\ffmpeg-static" set "NEED_INSTALL=1"
+
+if defined NEED_INSTALL (
   echo Installing dependencies...
   call npm install
   if errorlevel 1 exit /b 1

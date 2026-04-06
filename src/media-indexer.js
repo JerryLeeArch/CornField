@@ -3,6 +3,7 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
+import ffmpegPathStatic from 'ffmpeg-static';
 import ffprobe from 'ffprobe-static';
 import { db, isoNow } from './db.js';
 
@@ -107,6 +108,16 @@ let quickLookPathCache;
 async function resolveFfmpegPath() {
   if (ffmpegPathCache !== undefined) {
     return ffmpegPathCache;
+  }
+
+  if (ffmpegPathStatic) {
+    try {
+      await fs.access(ffmpegPathStatic);
+      ffmpegPathCache = ffmpegPathStatic;
+      return ffmpegPathCache;
+    } catch {
+      // continue to other candidates
+    }
   }
 
   const ffprobePath = ffprobe?.path;
