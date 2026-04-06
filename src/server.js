@@ -934,7 +934,7 @@ app.post('/api/videos/:id/comments', async (request, reply) => {
     return reply.code(400).send({ error: 'rating must be an integer between 0 and 5.' });
   }
   if (!content && !hasRating) {
-    return reply.code(400).send({ error: 'Enter a comment or choose a rating.' });
+    return reply.code(400).send({ error: 'Enter a review or choose a rating.' });
   }
 
   const now = isoNow();
@@ -950,13 +950,13 @@ app.post('/api/videos/:id/comments', async (request, reply) => {
 app.put('/api/comments/:id', async (request, reply) => {
   const id = Number(request.params.id);
   if (!Number.isInteger(id) || id <= 0) {
-    return reply.code(400).send({ error: 'Invalid comment id' });
+    return reply.code(400).send({ error: 'Invalid review id' });
   }
 
   const body = request.body || {};
   const row = db.prepare('SELECT video_id, content, rating, rated_at FROM comments WHERE id = ?').get(id);
   if (!row) {
-    return reply.code(404).send({ error: 'Comment not found' });
+    return reply.code(404).send({ error: 'Review not found' });
   }
 
   const hasRatingUpdate = Object.hasOwn(body, 'rating');
@@ -968,7 +968,7 @@ app.put('/api/comments/:id', async (request, reply) => {
     return reply.code(400).send({ error: 'rating must be an integer between 0 and 5.' });
   }
   if (!content && !nextHasRating) {
-    return reply.code(400).send({ error: 'Enter a comment or choose a rating.' });
+    return reply.code(400).send({ error: 'Enter a review or choose a rating.' });
   }
 
   const now = isoNow();
@@ -987,12 +987,12 @@ app.put('/api/comments/:id', async (request, reply) => {
 app.delete('/api/comments/:id', async (request, reply) => {
   const id = Number(request.params.id);
   if (!Number.isInteger(id) || id <= 0) {
-    return reply.code(400).send({ error: 'Invalid comment id' });
+    return reply.code(400).send({ error: 'Invalid review id' });
   }
 
   const row = db.prepare('SELECT video_id FROM comments WHERE id = ?').get(id);
   if (!row) {
-    return reply.code(404).send({ error: 'Comment not found' });
+    return reply.code(404).send({ error: 'Review not found' });
   }
 
   db.prepare('DELETE FROM comments WHERE id = ?').run(id);

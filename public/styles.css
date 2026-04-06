@@ -760,7 +760,11 @@ textarea {
   display: flex;
   flex-wrap: wrap;
   gap: 0.45rem 0.8rem;
-  margin-top: 0.45rem;
+}
+
+.comment-stack {
+  display: grid;
+  gap: 0.45rem;
 }
 
 .comment-rating-field {
@@ -783,7 +787,6 @@ textarea {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  margin-top: 0.55rem;
 }
 
 .rating-stars {
