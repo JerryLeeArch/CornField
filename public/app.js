@@ -498,9 +498,18 @@ function hideScanPreview() {
   scanPreviewBox.hidden = true;
 }
 
-function showScanPreview(addedCount, deletedCount, rootPath) {
+function showScanPreview(addedCount, deletedCount, missingThumbnailCount, rootPath) {
   state.pendingScanRoot = rootPath;
-  scanPreviewText.textContent = `${addedCount} videos added / ${deletedCount} videos deleted`;
+  const parts = [
+    `${addedCount} videos added`,
+    `${deletedCount} videos deleted`
+  ];
+
+  if (missingThumbnailCount > 0) {
+    parts.push(`${missingThumbnailCount} thumbnails to generate`);
+  }
+
+  scanPreviewText.textContent = parts.join(' / ');
   scanPreviewBox.hidden = false;
 }
 
@@ -2340,12 +2349,14 @@ function setupGlobalEvents() {
       await loadSettings();
       updateSettingsDialogInputs();
       hideScanPreview();
-      const autoThumbSuffix = Number(scanResult.autoThumbnailsCreated || 0) > 0
-        ? ` / ${Number(scanResult.autoThumbnailsCreated || 0)} thumbnails auto-assigned`
-        : '';
-      showToast(
-        `Library scan complete (${Number(scanResult.addedCount || 0)} added / ${Number(scanResult.deletedCount || 0)} deleted${autoThumbSuffix})`
-      );
+      const summaryParts = [
+        `${Number(scanResult.addedCount || 0)} added`,
+        `${Number(scanResult.deletedCount || 0)} deleted`
+      ];
+      if (Number(scanResult.autoThumbnailsCreated || 0) > 0) {
+        summaryParts.push(`${Number(scanResult.autoThumbnailsCreated || 0)} thumbnails auto-assigned`);
+      }
+      showToast(`Library scan complete (${summaryParts.join(' / ')})`);
       renderRoute();
     } catch (error) {
       showToast(error.message, true);
@@ -2376,14 +2387,15 @@ function setupGlobalEvents() {
 
       const addedCount = Number(preview.addedCount || 0);
       const deletedCount = Number(preview.deletedCount || 0);
+      const missingThumbnailCount = Number(preview.missingThumbnailCount || 0);
 
-      if (addedCount === 0 && deletedCount === 0) {
+      if (addedCount === 0 && deletedCount === 0 && missingThumbnailCount === 0) {
         hideScanPreview();
-        showToast('No library changes detected');
+        showToast('No library or thumbnail changes detected');
         return;
       }
 
-      showScanPreview(addedCount, deletedCount, root);
+      showScanPreview(addedCount, deletedCount, missingThumbnailCount, root);
     } catch (error) {
       showToast(error.message, true);
     } finally {

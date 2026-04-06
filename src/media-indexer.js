@@ -172,6 +172,11 @@ async function resolveQuickLookPath() {
 
 const selectRelativePathsStmt = db.prepare('SELECT relative_path FROM videos');
 const selectVideoByRelativePathStmt = db.prepare('SELECT id, thumbnail_path AS thumbnailPath FROM videos WHERE relative_path = ?');
+const selectThumbnailMissingRelativePathsStmt = db.prepare(`
+  SELECT relative_path
+  FROM videos
+  WHERE thumbnail_path IS NULL OR TRIM(thumbnail_path) = ''
+`);
 const updateVideoThumbnailStmt = db.prepare('UPDATE videos SET thumbnail_path = ?, thumbnail_time = ?, updated_at = ? WHERE id = ?');
 
 function calculateScanDiff(files) {
@@ -192,6 +197,22 @@ function calculateScanDiff(files) {
     addedCount: addedFiles.length,
     deletedCount
   };
+}
+
+function calculateThumbnailBackfillCount(files) {
+  const thumbnailMissingSet = new Set(
+    selectThumbnailMissingRelativePathsStmt.all().map((row) => row.relative_path)
+  );
+
+  let missingThumbnailCount = 0;
+
+  for (const file of files) {
+    if (thumbnailMissingSet.has(file.relative)) {
+      missingThumbnailCount += 1;
+    }
+  }
+
+  return missingThumbnailCount;
 }
 
 async function captureAutoThumbnailWithFfmpeg(absPath, videoId, durationSec) {
@@ -320,11 +341,13 @@ export async function previewLibraryScan(libraryRoot) {
   const root = await ensureLibraryRoot(libraryRoot);
   const files = await walkVideoFiles(root);
   const diff = calculateScanDiff(files);
+  const missingThumbnailCount = calculateThumbnailBackfillCount(files);
 
   return {
     scannedCount: files.length,
     addedCount: diff.addedCount,
     deletedCount: diff.deletedCount,
+    missingThumbnailCount,
     scannedAt: isoNow()
   };
 }
