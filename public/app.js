@@ -73,6 +73,11 @@ const commentEditState = {
   videoId: null
 };
 
+const activeVideoView = {
+  videoId: null,
+  refreshNotes: null
+};
+
 let currentRenderToken = 0;
 let cleanups = [];
 
@@ -631,6 +636,23 @@ function createCommentRatingDisplayHtml(comment) {
   `;
 }
 
+function createNotesListHtml(notes) {
+  return (notes || [])
+    .map(
+      (note) => `
+        <div class="note-item" data-note-id="${note.id}">
+          <div><strong>${formatDuration(note.timestampSec)}</strong> - ${escapeHtml(note.memo)}</div>
+          <div class="row-actions">
+            <button data-note-jump="${note.id}">Jump</button>
+            <button data-note-edit="${note.id}">Edit</button>
+            <button data-note-delete="${note.id}">Delete</button>
+          </div>
+        </div>
+      `
+    )
+    .join('') || '<div class="muted">No jump markers yet.</div>';
+}
+
 function getCardRatingRowHtml(video, options = {}) {
   const ratingCount = Number(video.ratingCount || 0);
   if (!ratingCount && options.hideWhenEmpty) {
@@ -1040,7 +1062,7 @@ async function renderVideoView(videoId) {
 
     const video = videoRes.video;
     const comments = commentsRes.items || [];
-    const notes = notesRes.items || [];
+    let notes = notesRes.items || [];
     const playbackToRestore = state.pendingVideoPlayback?.videoId === videoId ? state.pendingVideoPlayback : null;
     if (playbackToRestore) {
       state.pendingVideoPlayback = null;
@@ -1072,21 +1094,6 @@ async function renderVideoView(videoId) {
           <div class="row-actions">
             <button data-comment-edit="${comment.id}">Edit</button>
             <button data-comment-delete="${comment.id}">Delete</button>
-          </div>
-        </div>
-      `
-      )
-      .join('');
-
-    const notesHtml = notes
-      .map(
-        (note) => `
-        <div class="note-item" data-note-id="${note.id}">
-          <div><strong>${formatDuration(note.timestampSec)}</strong> - ${escapeHtml(note.memo)}</div>
-          <div class="row-actions">
-            <button data-note-jump="${note.id}">Jump</button>
-            <button data-note-edit="${note.id}">Edit</button>
-            <button data-note-delete="${note.id}">Delete</button>
           </div>
         </div>
       `
@@ -1214,7 +1221,7 @@ async function renderVideoView(videoId) {
               aria-label="Jump marker label"
             />
           </form>
-          <div class="list-block" id="notesList">${notesHtml || '<div class="muted">No jump markers yet.</div>'}</div>
+          <div class="list-block" id="notesList">${createNotesListHtml(notes)}</div>
         </div>
       </section>
     `;
@@ -1237,6 +1244,7 @@ async function renderVideoView(videoId) {
     const progressRange = document.getElementById('progressRange');
     const noteMarkerLayer = document.getElementById('noteMarkerLayer');
     const timeLabel = document.getElementById('timeLabel');
+    const notesList = document.getElementById('notesList');
 
     const relatedPromise = api(`/api/videos/${videoId}/related?limit=${relatedLimit}`)
       .then((relatedRes) => {
@@ -1338,6 +1346,33 @@ async function renderVideoView(videoId) {
         noteMarkerLayer.appendChild(marker);
       });
     }
+
+    function renderNotesList() {
+      notesList.innerHTML = createNotesListHtml(notes);
+    }
+
+    let latestNotesRequestId = 0;
+
+    async function refreshNotes() {
+      const requestId = ++latestNotesRequestId;
+      const notesRes = await api(`/api/videos/${videoId}/notes`);
+      if (token !== currentRenderToken || requestId !== latestNotesRequestId) {
+        return;
+      }
+
+      notes = notesRes.items || [];
+      renderNotesList();
+      renderNoteMarkers();
+    }
+
+    activeVideoView.videoId = videoId;
+    activeVideoView.refreshNotes = refreshNotes;
+    addCleanup(() => {
+      if (activeVideoView.videoId === videoId) {
+        activeVideoView.videoId = null;
+        activeVideoView.refreshNotes = null;
+      }
+    });
 
     function skipBy(delta) {
       if (!Number.isFinite(videoEl.duration)) return;
@@ -1749,8 +1784,10 @@ async function renderVideoView(videoId) {
           method: 'POST',
           body: JSON.stringify({ timestampSec, memo: normalizeMarkerLabel(memo) })
         });
+        noteTimestampInput.value = '';
+        noteMemoInput.value = '';
+        await refreshNotes();
         showToast('Marker added');
-        rerenderPreservingPlayback();
       } catch (error) {
         showToast(error.message, true);
       }
@@ -1782,9 +1819,10 @@ async function renderVideoView(videoId) {
       });
     });
 
-    document.querySelectorAll('[data-note-jump]').forEach((btn) => {
-      btn.addEventListener('click', (event) => {
-        const id = Number(event.currentTarget.getAttribute('data-note-jump'));
+    notesList.addEventListener('click', async (event) => {
+      const jumpBtn = event.target.closest?.('[data-note-jump]');
+      if (jumpBtn) {
+        const id = Number(jumpBtn.getAttribute('data-note-jump'));
         const note = notes.find((item) => item.id === id);
         if (!note) return;
         videoEl.currentTime = Number(note.timestampSec || 0);
@@ -1792,12 +1830,12 @@ async function renderVideoView(videoId) {
         showControls();
         window.scrollTo({ top: 0, behavior: 'smooth' });
         requestPlay();
-      });
-    });
+        return;
+      }
 
-    document.querySelectorAll('[data-note-edit]').forEach((btn) => {
-      btn.addEventListener('click', (event) => {
-        const id = Number(event.currentTarget.getAttribute('data-note-edit'));
+      const editBtn = event.target.closest?.('[data-note-edit]');
+      if (editBtn) {
+        const id = Number(editBtn.getAttribute('data-note-edit'));
         const current = notes.find((item) => item.id === id);
         if (!current) return;
 
@@ -1806,22 +1844,22 @@ async function renderVideoView(videoId) {
           videoId,
           getCurrentTime: () => videoEl.currentTime
         });
-      });
-    });
+        return;
+      }
 
-    document.querySelectorAll('[data-note-delete]').forEach((btn) => {
-      btn.addEventListener('click', async (event) => {
-        const id = Number(event.currentTarget.getAttribute('data-note-delete'));
-        if (!confirm('Delete this jump marker?')) return;
+      const deleteBtn = event.target.closest?.('[data-note-delete]');
+      if (!deleteBtn) return;
 
-        try {
-          await api(`/api/notes/${id}`, { method: 'DELETE' });
-          showToast('Marker deleted');
-          rerenderPreservingPlayback();
-        } catch (error) {
-          showToast(error.message, true);
-        }
-      });
+      const id = Number(deleteBtn.getAttribute('data-note-delete'));
+      if (!confirm('Delete this jump marker?')) return;
+
+      try {
+        await api(`/api/notes/${id}`, { method: 'DELETE' });
+        await refreshNotes();
+        showToast('Marker deleted');
+      } catch (error) {
+        showToast(error.message, true);
+      }
     });
 
     document.querySelectorAll('[data-video-tag]').forEach((btn) => {
@@ -2201,6 +2239,7 @@ function setupGlobalEvents() {
       return;
     }
 
+    const activeNoteVideoId = noteEditState.videoId;
     const timestampSec = parseMarkerTimeValue(noteEditTimestampInput.value);
     const memo = normalizeMarkerLabel(noteEditMemoInput.value);
 
@@ -2218,8 +2257,12 @@ function setupGlobalEvents() {
         })
       });
       closeNoteEditDialog();
+      if (activeVideoView.videoId === activeNoteVideoId && typeof activeVideoView.refreshNotes === 'function') {
+        await activeVideoView.refreshNotes();
+      } else {
+        rerenderPreservingPlayback();
+      }
       showToast('Marker updated');
-      rerenderPreservingPlayback();
     } catch (error) {
       showToast(error.message, true);
     }
