@@ -76,14 +76,14 @@
 
     <dialog id="noteEditDialog" class="settings-dialog note-edit-dialog">
       <form id="noteEditForm" method="dialog">
-        <h2>Edit Timeline Note</h2>
+        <h2>Edit Jump Marker</h2>
         <label>
-          Timestamp (seconds)
-          <input id="noteEditTimestampInput" type="number" min="0" step="0.1" required />
+          Time
+          <input id="noteEditTimestampInput" type="text" placeholder="mm:ss" required />
         </label>
         <label>
-          Memo
-          <textarea id="noteEditMemoInput" placeholder="Memo for this timestamp" required></textarea>
+          Label
+          <input id="noteEditMemoInput" type="text" placeholder="Marker Name(Optional)" />
         </label>
         <div class="dialog-actions">
           <button type="button" id="noteEditUseCurrentBtn">Use Current Time</button>

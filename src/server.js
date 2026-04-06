@@ -746,8 +746,12 @@ app.post('/api/videos/:id/rename', async (request, reply) => {
   }
 
   const ext = path.extname(existing.file_name);
-  const hasExt = path.extname(requestedName).length > 0;
-  const finalName = hasExt ? requestedName : `${requestedName}${ext}`;
+  const requestedExt = path.extname(requestedName);
+  if (requestedExt) {
+    return reply.code(400).send({ error: 'Enter the file name without changing the extension.' });
+  }
+
+  const finalName = ext ? `${requestedName}${ext}` : requestedName;
 
   const relDir = path.posix.dirname(existing.relative_path);
   const newRelativePath = relDir === '.' ? finalName : `${relDir}/${finalName}`;
