@@ -625,6 +625,10 @@ textarea {
   width: 64px;
 }
 
+#addMarkerBtn {
+  width: 104px;
+}
+
 #muteBtn {
   width: 82px;
 }
