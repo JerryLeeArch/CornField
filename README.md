@@ -16,9 +16,10 @@ No sample media is bundled in this repository. You point CornField at your own v
 Double-click `openCornField.command`.
 
 It will:
-1. Install dependencies on first run
-2. Start the local server
-3. Open CornField in your browser
+1. Open the official Node.js download page if Node.js is missing
+2. Install dependencies on first run
+3. Start the local server
+4. Open CornField in your browser
 
 If macOS blocks the first launch, open `System Settings > Privacy & Security` and click `Open Anyway`.
 
