@@ -58,7 +58,8 @@ const state = {
     relatedLimit: null
   },
   libraryRandomSeed: Date.now(),
-  pendingVideoPlayback: null
+  pendingVideoPlayback: null,
+  libraryScanInProgress: false
 };
 
 const noteEditState = {
@@ -115,7 +116,7 @@ function openNoteEditDialog({ note, videoId, getCurrentTime }) {
   noteEditState.noteId = note.id;
   noteEditState.videoId = videoId;
   noteEditState.getCurrentTime = getCurrentTime;
-  noteEditTimestampInput.value = String(note.timestampSec ?? 0);
+  noteEditTimestampInput.value = formatMarkerTimeValue(note.timestampSec ?? 0);
   noteEditMemoInput.value = note.memo || '';
 
   if (!noteEditDialog.open) {
@@ -259,6 +260,95 @@ function formatDuration(seconds) {
   return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
 
+function formatMarkerTimeValue(seconds) {
+  if (!Number.isFinite(seconds) || seconds < 0) return '';
+
+  const rounded = Math.round(seconds * 10) / 10;
+  let wholeSeconds = Math.floor(rounded);
+  let fractionalTenths = Math.round((rounded - wholeSeconds) * 10);
+
+  if (fractionalTenths === 10) {
+    wholeSeconds += 1;
+    fractionalTenths = 0;
+  }
+
+  const hours = Math.floor(wholeSeconds / 3600);
+  const minutes = Math.floor((wholeSeconds % 3600) / 60);
+  const secs = wholeSeconds % 60;
+
+  const base = hours > 0
+    ? `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`
+    : `${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+
+  return fractionalTenths > 0 ? `${base}.${fractionalTenths}` : base;
+}
+
+function parseMarkerTimeValue(rawValue, { fallback = null } = {}) {
+  const value = String(rawValue ?? '').trim();
+  if (!value) return fallback;
+
+  if (/^\d+(\.\d+)?$/.test(value)) {
+    const seconds = Number(value);
+    return Number.isFinite(seconds) && seconds >= 0 ? seconds : null;
+  }
+
+  const parts = value.split(':').map((part) => part.trim());
+  if (parts.length < 2 || parts.length > 3) {
+    return null;
+  }
+
+  if (parts.some((part) => !/^\d+(\.\d+)?$/.test(part))) {
+    return null;
+  }
+
+  const secondsPart = Number(parts.at(-1));
+  const minutesPart = Number(parts.at(-2));
+  const hoursPart = parts.length === 3 ? Number(parts[0]) : 0;
+
+  if (![secondsPart, minutesPart, hoursPart].every((part) => Number.isFinite(part) && part >= 0)) {
+    return null;
+  }
+
+  if (secondsPart >= 60 || (parts.length === 3 && minutesPart >= 60)) {
+    return null;
+  }
+
+  return hoursPart * 3600 + minutesPart * 60 + secondsPart;
+}
+
+function normalizeMarkerLabel(value) {
+  const label = String(value ?? '').trim();
+  return label || 'Corn';
+}
+
+function bindMarkerTimeInput(input, getFallbackSeconds) {
+  if (!input) return;
+
+  input.addEventListener('keydown', (event) => {
+    if (!['ArrowUp', 'ArrowDown'].includes(event.key)) return;
+    event.preventDefault();
+
+    const fallbackSeconds = Number(getFallbackSeconds?.() ?? 0);
+    const currentSeconds = parseMarkerTimeValue(input.value, { fallback: fallbackSeconds });
+    if (!Number.isFinite(currentSeconds) || currentSeconds < 0) {
+      showToast('Enter a valid time.', true);
+      return;
+    }
+
+    const delta = event.key === 'ArrowUp' ? 1 : -1;
+    const nextSeconds = Math.max(0, Math.round(currentSeconds) + delta);
+    input.value = formatMarkerTimeValue(nextSeconds);
+  });
+
+  input.addEventListener('blur', () => {
+    if (!input.value.trim()) return;
+    const parsed = parseMarkerTimeValue(input.value);
+    if (Number.isFinite(parsed) && parsed >= 0) {
+      input.value = formatMarkerTimeValue(parsed);
+    }
+  });
+}
+
 function firstAvailableDate(video) {
   return video.uploadDate || video.originalCreatedAt;
 }
@@ -276,6 +366,29 @@ function showToast(message, isError = false) {
   setTimeout(() => {
     toast.remove();
   }, 2300);
+}
+
+function syncLibraryScanningIndicator() {
+  if (!['library', 'tag', 'starring'].includes(state.route?.name)) {
+    return;
+  }
+
+  const libraryStatus = document.getElementById('libraryStatus');
+  const videoGrid = document.getElementById('videoGrid');
+  if (!libraryStatus || !videoGrid) {
+    return;
+  }
+
+  const baseStatus = libraryStatus.dataset.baseStatus || libraryStatus.textContent || '';
+  libraryStatus.textContent = state.libraryScanInProgress ? `${baseStatus} | Scanning library...` : baseStatus;
+
+  if (!state.libraryScanInProgress) {
+    return;
+  }
+
+  if (!videoGrid.querySelector('.video-card')) {
+    videoGrid.innerHTML = '<div class="warning">Scanning library...</div>';
+  }
 }
 
 async function loadSettings() {
@@ -388,6 +501,19 @@ function showScanPreview(addedCount, deletedCount, rootPath) {
 
 function buildVideoHash(videoId) {
   return `#/video/${videoId}`;
+}
+
+function getFileNameExtension(fileName) {
+  const value = String(fileName || '');
+  const dotIndex = value.lastIndexOf('.');
+  if (dotIndex <= 0) return '';
+  return value.slice(dotIndex);
+}
+
+function getFileNameBaseName(fileName) {
+  const value = String(fileName || '');
+  const ext = getFileNameExtension(value);
+  return ext ? value.slice(0, -ext.length) : value;
 }
 
 function normalizeOptionalRating(value) {
@@ -834,10 +960,13 @@ async function renderLibraryView(options = {}) {
     if (state.filters.starring) hints.push(`Starring: ${state.filters.starring}`);
     const routeHint = hints.join(' | ');
 
-    libraryStatus.textContent = `${data.total} videos | page ${state.page}/${totalPages}${routeHint ? ` | ${routeHint}` : ''}`;
+    libraryStatus.dataset.baseStatus = `${data.total} videos | page ${state.page}/${totalPages}${routeHint ? ` | ${routeHint}` : ''}`;
+    syncLibraryScanningIndicator();
 
     if (data.items.length === 0) {
-      videoGrid.innerHTML = '<div class="warning">No videos matched your filters.</div>';
+      videoGrid.innerHTML = state.libraryScanInProgress
+        ? '<div class="warning">Scanning library...</div>'
+        : '<div class="warning">No videos matched your filters.</div>';
     } else {
       videoGrid.innerHTML = '';
       data.items.forEach((video, index) => {
@@ -954,7 +1083,6 @@ async function renderVideoView(videoId) {
         (note) => `
         <div class="note-item" data-note-id="${note.id}">
           <div><strong>${formatDuration(note.timestampSec)}</strong> - ${escapeHtml(note.memo)}</div>
-          <div class="muted">${formatDateTime(note.createdAt)}</div>
           <div class="row-actions">
             <button data-note-jump="${note.id}">Jump</button>
             <button data-note-edit="${note.id}">Edit</button>
@@ -977,7 +1105,6 @@ async function renderVideoView(videoId) {
             </div>
             <div class="control-row">
               <button id="playPauseBtn">Play</button>
-              <button id="theaterBtn">Theater</button>
               <button id="fullscreenBtn">Fullscreen</button>
               <button id="muteBtn">Mute</button>
               <input id="volumeRange" class="volume-slider" type="range" min="0" max="1" step="0.01" value="1" />
@@ -1035,13 +1162,11 @@ async function renderVideoView(videoId) {
 
           <div id="metaEditor" class="collapsible">
             <form id="metaForm" class="form-grid meta-editor-form">
-              <label>View Count <input id="metaViewCount" type="number" min="0" value="${Number(video.viewCount || 0)}" /></label>
               <label>Tags (comma separated) <input id="metaTags" value="${escapeHtml((video.tags || []).join(', '))}" /></label>
-              <label>Category <input id="metaCategory" value="${escapeHtml(video.category || '')}" /></label>
               <label>Starring (comma separated) <input id="metaStarrings" value="${escapeHtml((video.starrings || []).join(', '))}" /></label>
-              <label>Upload Date <input id="metaUploadDate" type="date" value="${escapeHtml((video.uploadDate || '').slice(0, 10))}" /></label>
+              <label>View Count <input id="metaViewCount" type="number" min="0" value="${Number(video.viewCount || 0)}" /></label>
               <label>Display Title <input id="metaTitle" value="${escapeHtml(video.displayTitle || '')}" required /></label>
-              <label>Description <textarea id="metaDescription">${escapeHtml(video.description || '')}</textarea></label>
+              <label>Upload Date <input id="metaUploadDate" type="date" value="${escapeHtml((video.uploadDate || '').slice(0, 10))}" /></label>
               <button type="submit" class="primary">Save Metadata</button>
             </form>
 
@@ -1049,7 +1174,10 @@ async function renderVideoView(videoId) {
 
             <form id="renameForm" class="form-grid meta-editor-form">
               <label>Rename Real File
-                <input id="renameInput" value="${escapeHtml(video.fileName)}" />
+                <div class="rename-file-row">
+                  <input id="renameInput" value="${escapeHtml(getFileNameBaseName(video.fileName))}" />
+                  <span class="rename-file-ext">${escapeHtml(getFileNameExtension(video.fileName))}</span>
+                </div>
               </label>
               <button type="submit">Rename File</button>
             </form>
@@ -1068,21 +1196,24 @@ async function renderVideoView(videoId) {
 
       <section class="section-panel" style="margin-top: 1rem;">
         <div class="panel-body">
-          <h3 class="section-title">Timeline Notes</h3>
-          <button id="noteToggleBtn" class="subtle-btn" type="button">Add Timeline Note</button>
-          <div id="noteFormWrap" class="collapsible">
-            <form id="noteForm" class="form-grid">
-              <label>Timestamp (seconds)
-                <input id="noteTimestampInput" type="number" min="0" step="0.1" placeholder="You can fill this with current playback time" />
-              </label>
-              <textarea id="noteMemoInput" placeholder="Memo for this timestamp"></textarea>
-              <div class="row-actions">
-                <button type="button" id="fillCurrentTimeBtn">Use Current Time</button>
-                <button type="submit" class="primary">Add Note</button>
-              </div>
-            </form>
-          </div>
-          <div class="list-block" id="notesList">${notesHtml || '<div class="muted">No timeline notes yet.</div>'}</div>
+          <h3 class="section-title">Jump Markers</h3>
+          <form id="noteForm" class="form-grid jump-marker-form" style="margin-top: .7rem;">
+            <button type="submit" class="primary">Add Marker</button>
+            <input
+              id="noteTimestampInput"
+              class="jump-marker-time-input"
+              type="text"
+              placeholder="at current playhead by default"
+              aria-label="Jump marker time"
+            />
+            <input
+              id="noteMemoInput"
+              type="text"
+              placeholder="Marker Name(Optional)"
+              aria-label="Jump marker label"
+            />
+          </form>
+          <div class="list-block" id="notesList">${notesHtml || '<div class="muted">No jump markers yet.</div>'}</div>
         </div>
       </section>
     `;
@@ -1098,7 +1229,6 @@ async function renderVideoView(videoId) {
     const playerShell = document.getElementById('playerShell');
     const playerControls = document.getElementById('playerControls');
     const playPauseBtn = document.getElementById('playPauseBtn');
-    const theaterBtn = document.getElementById('theaterBtn');
     const fullscreenBtn = document.getElementById('fullscreenBtn');
     const muteBtn = document.getElementById('muteBtn');
     const volumeRange = document.getElementById('volumeRange');
@@ -1214,10 +1344,6 @@ async function renderVideoView(videoId) {
       syncProgressFromVideo();
     }
 
-    function toggleTheaterMode() {
-      playerShell.classList.toggle('theater');
-    }
-
     function requestPlay() {
       videoEl.play().catch((error) => {
         if (error?.name === 'NotSupportedError') {
@@ -1320,13 +1446,15 @@ async function renderVideoView(videoId) {
       isScrubbingProgress = false;
     });
 
-    theaterBtn.addEventListener('click', toggleTheaterMode);
-
     fullscreenBtn.addEventListener('click', async () => {
-      if (document.fullscreenElement) {
-        await document.exitFullscreen();
-      } else {
-        await playerShell.requestFullscreen();
+      try {
+        if (document.fullscreenElement) {
+          await document.exitFullscreen();
+        } else {
+          await playerShell.requestFullscreen();
+        }
+      } catch (error) {
+        showToast(error?.message || 'Fullscreen failed.', true);
       }
     });
 
@@ -1425,9 +1553,6 @@ async function renderVideoView(videoId) {
         } else {
           playerShell.requestFullscreen();
         }
-      } else if (event.key.toLowerCase() === 't') {
-        event.preventDefault();
-        toggleTheaterMode();
       } else if (event.key.toLowerCase() === 'm') {
         event.preventDefault();
         videoEl.muted = !videoEl.muted;
@@ -1455,9 +1580,7 @@ async function renderVideoView(videoId) {
           method: 'PUT',
           body: JSON.stringify({
             displayTitle: document.getElementById('metaTitle').value.trim(),
-            description: document.getElementById('metaDescription').value.trim(),
             uploadDate: document.getElementById('metaUploadDate').value,
-            category: document.getElementById('metaCategory').value.trim(),
             viewCount: Number(document.getElementById('metaViewCount').value || 0),
             tags: document.getElementById('metaTags').value
               .split(',')
@@ -1607,27 +1730,28 @@ async function renderVideoView(videoId) {
       });
     });
 
+    const noteForm = document.getElementById('noteForm');
     const noteTimestampInput = document.getElementById('noteTimestampInput');
     const noteMemoInput = document.getElementById('noteMemoInput');
-    const fillCurrentTimeBtn = document.getElementById('fillCurrentTimeBtn');
-    const noteToggleBtn = document.getElementById('noteToggleBtn');
-    const noteFormWrap = document.getElementById('noteFormWrap');
 
-    noteToggleBtn.addEventListener('click', () => {
-      const open = noteFormWrap.classList.toggle('open');
-      noteToggleBtn.textContent = open ? 'Close Timeline Note Editor' : 'Add Timeline Note';
-    });
+    bindMarkerTimeInput(noteTimestampInput, () => videoEl.currentTime);
 
-    fillCurrentTimeBtn.addEventListener('click', () => {
-      noteTimestampInput.value = videoEl.currentTime.toFixed(1);
-    });
+    const submitMarkerOnEnter = (event) => {
+      if (event.key === 'Enter' && !event.shiftKey && !event.metaKey && !event.ctrlKey && !event.altKey) {
+        event.preventDefault();
+        noteForm.requestSubmit();
+      }
+    };
 
-    document.getElementById('noteForm').addEventListener('submit', async (event) => {
+    noteTimestampInput.addEventListener('keydown', submitMarkerOnEnter);
+    noteMemoInput.addEventListener('keydown', submitMarkerOnEnter);
+
+    noteForm.addEventListener('submit', async (event) => {
       event.preventDefault();
-      const timestampSec = Number(noteTimestampInput.value || videoEl.currentTime || 0);
-      const memo = noteMemoInput.value.trim();
-      if (!memo) {
-        showToast('Enter note content.', true);
+      const timestampSec = parseMarkerTimeValue(noteTimestampInput.value, { fallback: videoEl.currentTime || 0 });
+      const memo = normalizeMarkerLabel(noteMemoInput.value);
+      if (!Number.isFinite(timestampSec) || timestampSec < 0) {
+        showToast('Enter a valid time.', true);
         return;
       }
 
@@ -1636,7 +1760,7 @@ async function renderVideoView(videoId) {
           method: 'POST',
           body: JSON.stringify({ timestampSec, memo })
         });
-        showToast('Note added');
+        showToast('Marker added');
         rerenderPreservingPlayback();
       } catch (error) {
         showToast(error.message, true);
@@ -1649,6 +1773,9 @@ async function renderVideoView(videoId) {
         const note = notes.find((item) => item.id === id);
         if (!note) return;
         videoEl.currentTime = Number(note.timestampSec || 0);
+        syncProgressFromVideo();
+        showControls();
+        window.scrollTo({ top: 0, behavior: 'smooth' });
         requestPlay();
       });
     });
@@ -1670,11 +1797,11 @@ async function renderVideoView(videoId) {
     document.querySelectorAll('[data-note-delete]').forEach((btn) => {
       btn.addEventListener('click', async (event) => {
         const id = Number(event.currentTarget.getAttribute('data-note-delete'));
-        if (!confirm('Delete this note?')) return;
+        if (!confirm('Delete this jump marker?')) return;
 
         try {
           await api(`/api/notes/${id}`, { method: 'DELETE' });
-          showToast('Note deleted');
+          showToast('Marker deleted');
           rerenderPreservingPlayback();
         } catch (error) {
           showToast(error.message, true);
@@ -2036,9 +2163,11 @@ function setupGlobalEvents() {
     event.preventDefault();
   });
 
+  bindMarkerTimeInput(noteEditTimestampInput, () => noteEditState.getCurrentTime?.() ?? 0);
+
   noteEditUseCurrentBtn.addEventListener('click', () => {
     const currentTime = Number(noteEditState.getCurrentTime?.() ?? 0);
-    noteEditTimestampInput.value = Number.isFinite(currentTime) ? currentTime.toFixed(1) : '0.0';
+    noteEditTimestampInput.value = formatMarkerTimeValue(Number.isFinite(currentTime) ? currentTime : 0);
   });
 
   noteEditCancelBtn.addEventListener('click', () => {
@@ -2057,16 +2186,11 @@ function setupGlobalEvents() {
       return;
     }
 
-    const timestampSec = Number(noteEditTimestampInput.value);
-    const memo = noteEditMemoInput.value.trim();
+    const timestampSec = parseMarkerTimeValue(noteEditTimestampInput.value);
+    const memo = normalizeMarkerLabel(noteEditMemoInput.value);
 
     if (!Number.isFinite(timestampSec) || timestampSec < 0) {
-      showToast('Enter a valid timestamp.', true);
-      return;
-    }
-
-    if (!memo) {
-      showToast('Enter note content.', true);
+      showToast('Enter a valid time.', true);
       return;
     }
 
@@ -2079,7 +2203,7 @@ function setupGlobalEvents() {
         })
       });
       closeNoteEditDialog();
-      showToast('Note updated');
+      showToast('Marker updated');
       rerenderPreservingPlayback();
     } catch (error) {
       showToast(error.message, true);
@@ -2143,6 +2267,9 @@ function setupGlobalEvents() {
       return;
     }
 
+    state.libraryScanInProgress = true;
+    syncLibraryScanningIndicator();
+
     try {
       scanNowBtn.disabled = true;
       scanProceedBtn.disabled = true;
@@ -2165,6 +2292,8 @@ function setupGlobalEvents() {
     } catch (error) {
       showToast(error.message, true);
     } finally {
+      state.libraryScanInProgress = false;
+      syncLibraryScanningIndicator();
       scanNowBtn.disabled = false;
       scanProceedBtn.disabled = false;
       scanCancelBtn.disabled = false;
@@ -2220,15 +2349,6 @@ function setupGlobalEvents() {
 
     libraryResizeTimer = setTimeout(() => {
       if (state.route?.name === 'video') {
-        const relatedGrid = document.getElementById('relatedGrid');
-        if (!relatedGrid) {
-          return;
-        }
-
-        const nextRelatedLimit = getRelatedVideoLimit(relatedGrid);
-        if (nextRelatedLimit !== state.layout.relatedLimit) {
-          rerenderPreservingPlayback();
-        }
         return;
       }
 
