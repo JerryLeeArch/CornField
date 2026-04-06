@@ -8,12 +8,16 @@ No sample media is bundled in this repository. You point CornField at your own v
 ## Requirements
 
 - Node.js 20+ recommended
-- macOS
+- macOS or Windows
 - A local or mounted video library folder you want to index
 
 ## Launching
 
-Double-click `openCornField.command`.
+macOS:
+- Double-click `openCornField.command`
+
+Windows:
+- Double-click `openCornField.cmd`
 
 If macOS blocks the first launch, open `System Settings > Privacy & Security` and click `Open Anyway`, then launch it again.
 
@@ -28,6 +32,8 @@ Make executable once if needed:
 ```bash
 chmod +x openCornField.command
 ```
+
+On Windows, no extra permission step is usually needed for `openCornField.cmd`.
 
 ## First-Time Setup
 
@@ -59,7 +65,7 @@ chmod +x openCornField.command
 
 ### Manual Launch
 
-If you are developing locally or launching without the macOS helper:
+If you are developing locally or launching without the desktop helper:
 
 ```bash
 npm install
@@ -89,6 +95,7 @@ Open: [http://127.0.0.1:4300](http://127.0.0.1:4300)
 - `src/db.js`: SQLite schema, settings, relation helpers
 - `src/media-indexer.js`: folder scan, probe, sync, auto-thumbnail logic
 - `openCornField.command`: macOS launcher
+- `openCornField.cmd`: Windows launcher
 - `public/index.html`: app shell
 - `public/app.js`: UI behavior and API integration
 - `public/styles.css`: dark theme styling
