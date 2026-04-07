@@ -313,6 +313,16 @@ function serializeVideoRow(row) {
 let watcher = null;
 let scanInFlight = null;
 let pendingWatchScanTimer = null;
+let scanStatus = {
+  inProgress: false,
+  phase: 'idle',
+  scannedCount: null,
+  totalCount: null,
+  currentFile: null,
+  startedAt: null,
+  finishedAt: null,
+  error: ''
+};
 const commentRatingStatsJoin = `
   LEFT JOIN (
     SELECT video_id, AVG(rating) AS average_rating, COUNT(*) AS rating_count
@@ -322,6 +332,30 @@ const commentRatingStatsJoin = `
   ) cr ON cr.video_id = v.id
 `;
 
+function mergeScanStatus(patch = {}) {
+  const nextStatus = {
+    ...scanStatus,
+    ...patch
+  };
+
+  if (Object.hasOwn(patch, 'scannedCount')) {
+    const scannedCount = patch.scannedCount;
+    nextStatus.scannedCount = scannedCount === null ? null : Math.max(0, Math.floor(Number(scannedCount) || 0));
+  }
+
+  if (Object.hasOwn(patch, 'totalCount')) {
+    const totalCount = patch.totalCount;
+    nextStatus.totalCount = totalCount === null ? null : Math.max(0, Math.floor(Number(totalCount) || 0));
+  }
+
+  if (Object.hasOwn(patch, 'error')) {
+    nextStatus.error = String(patch.error || '');
+  }
+
+  scanStatus = nextStatus;
+  return scanStatus;
+}
+
 async function runScan(libraryRootOverride = null) {
   if (scanInFlight) {
     return scanInFlight;
@@ -329,12 +363,53 @@ async function runScan(libraryRootOverride = null) {
 
   scanInFlight = (async () => {
     const libraryRoot = libraryRootOverride ? path.resolve(libraryRootOverride) : getLibraryRootOrThrow();
-    const result = await scanLibrary(libraryRoot);
+    mergeScanStatus({
+      inProgress: true,
+      phase: 'discovering',
+      scannedCount: 0,
+      totalCount: null,
+      currentFile: null,
+      startedAt: isoNow(),
+      finishedAt: null,
+      error: ''
+    });
+
+    const result = await scanLibrary(libraryRoot, {
+      onProgress(progress) {
+        mergeScanStatus({
+          inProgress: true,
+          phase: progress.phase || scanStatus.phase,
+          scannedCount: progress.scannedCount,
+          totalCount: progress.totalCount,
+          currentFile: progress.currentFile || null
+        });
+      }
+    });
+
+    mergeScanStatus({
+      inProgress: false,
+      phase: 'idle',
+      scannedCount: result.scannedCount,
+      totalCount: result.scannedCount,
+      currentFile: null,
+      startedAt: result.scannedAt || scanStatus.startedAt,
+      finishedAt: isoNow(),
+      error: ''
+    });
     return result;
   })();
 
   try {
     return await scanInFlight;
+  } catch (error) {
+    mergeScanStatus({
+      inProgress: false,
+      phase: 'error',
+      currentFile: null,
+      finishedAt: isoNow(),
+      error: error.message || 'Library scan failed.'
+    });
+    throw error;
   } finally {
     scanInFlight = null;
   }
@@ -535,6 +610,13 @@ app.post('/api/library/scan/preview', async (request, reply) => {
   } catch (error) {
     return reply.code(400).send({ error: error.message });
   }
+});
+
+app.get('/api/library/scan/status', async () => {
+  return {
+    ok: true,
+    ...scanStatus
+  };
 });
 
 app.get('/api/videos', async (request) => {

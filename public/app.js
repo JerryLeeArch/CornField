@@ -59,7 +59,9 @@ const state = {
   },
   libraryRandomSeed: Date.now(),
   pendingVideoPlayback: null,
-  libraryScanInProgress: false
+  libraryScanInProgress: false,
+  libraryScanScannedCount: null,
+  libraryScanTotalCount: null
 };
 
 const noteEditState = {
@@ -80,6 +82,11 @@ const activeVideoView = {
 
 let currentRenderToken = 0;
 let cleanups = [];
+let libraryScanStatusTimer = null;
+let libraryScanStatusRequest = null;
+
+const LIBRARY_SCAN_STATUS_POLL_MS = 900;
+const LIBRARY_SCAN_STATUS_IDLE_POLL_MS = 4000;
 
 function cleanupActiveView() {
   for (const fn of cleanups) {
@@ -225,6 +232,95 @@ async function api(path, options = {}) {
   }
 
   return payload;
+}
+
+function normalizeScanCount(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return null;
+  }
+  return Math.floor(parsed);
+}
+
+function getLibraryScanMessage() {
+  const totalCount = normalizeScanCount(state.libraryScanTotalCount);
+  const scannedCount = normalizeScanCount(state.libraryScanScannedCount);
+
+  if (totalCount !== null) {
+    return `Scanning library... ${Math.min(scannedCount ?? 0, totalCount)} / ${totalCount}`;
+  }
+
+  return 'Scanning library...';
+}
+
+function applyLibraryScanStatus(status = {}) {
+  state.libraryScanInProgress = Boolean(status?.inProgress);
+  state.libraryScanScannedCount = normalizeScanCount(status?.scannedCount);
+  state.libraryScanTotalCount = normalizeScanCount(status?.totalCount);
+  syncLibraryScanningIndicator();
+}
+
+async function refreshLibraryScanStatus({ silent = false } = {}) {
+  if (libraryScanStatusRequest) {
+    return libraryScanStatusRequest;
+  }
+
+  libraryScanStatusRequest = (async () => {
+    try {
+      const status = await api('/api/library/scan/status');
+      applyLibraryScanStatus(status);
+      return status;
+    } catch (error) {
+      if (!silent) {
+        throw error;
+      }
+      return null;
+    } finally {
+      libraryScanStatusRequest = null;
+    }
+  })();
+
+  return libraryScanStatusRequest;
+}
+
+function stopLibraryScanStatusPolling() {
+  if (!libraryScanStatusTimer) {
+    return;
+  }
+
+  clearTimeout(libraryScanStatusTimer);
+  libraryScanStatusTimer = null;
+}
+
+function shouldMonitorLibraryScanStatus() {
+  return state.libraryScanInProgress || ['library', 'tag', 'starring'].includes(state.route?.name);
+}
+
+function scheduleLibraryScanStatusPolling(delayMs = null) {
+  stopLibraryScanStatusPolling();
+
+  if (!shouldMonitorLibraryScanStatus()) {
+    return;
+  }
+
+  const nextDelay = delayMs ?? (state.libraryScanInProgress ? LIBRARY_SCAN_STATUS_POLL_MS : LIBRARY_SCAN_STATUS_IDLE_POLL_MS);
+  libraryScanStatusTimer = setTimeout(async () => {
+    const wasInProgress = state.libraryScanInProgress;
+
+    try {
+      await refreshLibraryScanStatus({ silent: true });
+    } finally {
+      const scanJustFinished = wasInProgress && !state.libraryScanInProgress;
+
+      if (shouldMonitorLibraryScanStatus()) {
+        scheduleLibraryScanStatusPolling();
+      }
+
+      if (scanJustFinished && ['library', 'tag', 'starring'].includes(state.route?.name)) {
+        renderRoute();
+      }
+    }
+  }, nextDelay);
 }
 
 function escapeHtml(value) {
@@ -385,14 +481,21 @@ function syncLibraryScanningIndicator() {
   }
 
   const baseStatus = libraryStatus.dataset.baseStatus || libraryStatus.textContent || '';
-  libraryStatus.textContent = state.libraryScanInProgress ? `${baseStatus} | Scanning library...` : baseStatus;
+  const scanMessage = getLibraryScanMessage();
+  libraryStatus.textContent = state.libraryScanInProgress ? `${baseStatus} | ${scanMessage}` : baseStatus;
 
   if (!state.libraryScanInProgress) {
     return;
   }
 
-  if (!videoGrid.querySelector('.video-card')) {
-    videoGrid.innerHTML = '<div class="warning">Scanning library...</div>';
+  if (!videoGrid.querySelector('.video-card') && !videoGrid.querySelector('.warning.error')) {
+    const warningEl = videoGrid.querySelector('.warning');
+    if (warningEl) {
+      warningEl.textContent = scanMessage;
+      return;
+    }
+
+    videoGrid.innerHTML = `<div class="warning">${escapeHtml(scanMessage)}</div>`;
   }
 }
 
@@ -1038,8 +1141,9 @@ async function renderLibraryView(options = {}) {
     syncLibraryScanningIndicator();
 
     if (data.items.length === 0) {
+      const scanMessage = getLibraryScanMessage();
       videoGrid.innerHTML = state.libraryScanInProgress
-        ? '<div class="warning">Scanning library...</div>'
+        ? `<div class="warning">${escapeHtml(scanMessage)}</div>`
         : '<div class="warning">No videos matched your filters.</div>';
     } else {
       videoGrid.innerHTML = '';
@@ -2199,6 +2303,13 @@ async function renderRoute() {
     }
   }
 
+  if (state.settings.libraryRoot && shouldMonitorLibraryScanStatus()) {
+    await refreshLibraryScanStatus({ silent: true });
+    scheduleLibraryScanStatusPolling();
+  } else {
+    stopLibraryScanStatusPolling();
+  }
+
   if (!state.settings.libraryRoot && !['starrings', 'database'].includes(state.route.name)) {
     renderNoLibraryConfigured();
     return;
@@ -2412,8 +2523,12 @@ function setupGlobalEvents() {
       return;
     }
 
-    state.libraryScanInProgress = true;
-    syncLibraryScanningIndicator();
+    applyLibraryScanStatus({
+      inProgress: true,
+      scannedCount: 0,
+      totalCount: null
+    });
+    scheduleLibraryScanStatusPolling(200);
 
     try {
       scanNowBtn.disabled = true;
@@ -2434,13 +2549,18 @@ function setupGlobalEvents() {
       if (Number(scanResult.autoThumbnailsCreated || 0) > 0) {
         summaryParts.push(`${Number(scanResult.autoThumbnailsCreated || 0)} thumbnails auto-assigned`);
       }
+      applyLibraryScanStatus({
+        inProgress: false,
+        scannedCount: scanResult.scannedCount,
+        totalCount: scanResult.scannedCount
+      });
       showToast(`Library scan complete (${summaryParts.join(' / ')})`);
       renderRoute();
     } catch (error) {
       showToast(error.message, true);
     } finally {
-      state.libraryScanInProgress = false;
-      syncLibraryScanningIndicator();
+      await refreshLibraryScanStatus({ silent: true });
+      scheduleLibraryScanStatusPolling();
       scanNowBtn.disabled = false;
       scanProceedBtn.disabled = false;
       scanCancelBtn.disabled = false;
