@@ -1,7 +1,7 @@
 # CornField
 
 CornField is a local-first browser video player for personal libraries.  
-It keeps your real files on disk, stores app state locally, and gives you a fast browser UI for browsing, tagging, rating, and watching your own video library.
+It keeps your original files on disk, stores app state locally, and gives you a fast browser UI for browsing, tagging, rating, and watching your own video library.
 
 No sample media is bundled in this repository. You point CornField at your own video folder on first use.
 
@@ -38,7 +38,7 @@ On Windows, no extra permission step is usually needed for `openCornField.cmd`.
 ## First-Time Setup
 
 1. Open `Settings`.
-2. Set `Library Folder Path` to your real video folder.
+2. Set `Library Folder Path` to your video folder.
 3. Click `Scan Library`.
 
 ## Scan Behavior
