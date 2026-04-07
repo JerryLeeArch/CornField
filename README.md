@@ -27,12 +27,6 @@ It will:
 3. Start the local server
 4. Open CornField in your browser
 
-Make executable once if needed:
-
-```bash
-chmod +x openCornField.command
-```
-
 On Windows, no extra permission step is usually needed for `openCornField.cmd`.
 
 ## First-Time Setup
