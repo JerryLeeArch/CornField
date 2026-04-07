@@ -352,14 +352,25 @@ export async function previewLibraryScan(libraryRoot) {
   };
 }
 
-export async function scanLibrary(libraryRoot) {
+export async function scanLibrary(libraryRoot, options = {}) {
+  const { onProgress } = options;
   const root = await ensureLibraryRoot(libraryRoot);
+  onProgress?.({
+    phase: 'discovering',
+    scannedCount: 0,
+    totalCount: null
+  });
   const startAt = isoNow();
   const files = await walkVideoFiles(root);
   const diff = calculateScanDiff(files);
   let autoThumbnailsCreated = 0;
+  onProgress?.({
+    phase: 'processing',
+    scannedCount: 0,
+    totalCount: files.length
+  });
 
-  for (const file of files) {
+  for (const [index, file] of files.entries()) {
     const fileStat = await fs.stat(file.absPath);
     const probed = await probeVideo(file.absPath);
     const displayTitle = path.parse(file.fileName).name;
@@ -379,18 +390,27 @@ export async function scanLibrary(libraryRoot) {
     });
 
     const row = selectVideoByRelativePathStmt.get(file.relative);
-    if (!row?.id || row.thumbnailPath) {
-      continue;
+    if (row?.id && !row.thumbnailPath) {
+      const captured = await captureAutoThumbnail(file.absPath, row.id, probed.duration);
+      if (captured) {
+        updateVideoThumbnailStmt.run(captured.thumbnailPath, captured.thumbnailTime, isoNow(), row.id);
+        autoThumbnailsCreated += 1;
+      }
     }
 
-    const captured = await captureAutoThumbnail(file.absPath, row.id, probed.duration);
-    if (!captured) {
-      continue;
-    }
-
-    updateVideoThumbnailStmt.run(captured.thumbnailPath, captured.thumbnailTime, isoNow(), row.id);
-    autoThumbnailsCreated += 1;
+    onProgress?.({
+      phase: 'processing',
+      scannedCount: index + 1,
+      totalCount: files.length,
+      currentFile: file.relative
+    });
   }
+
+  onProgress?.({
+    phase: 'finalizing',
+    scannedCount: files.length,
+    totalCount: files.length
+  });
 
   db.prepare('DELETE FROM videos WHERE last_scanned_at IS NULL OR last_scanned_at < ?').run(startAt);
   db.prepare('DELETE FROM tags WHERE id NOT IN (SELECT DISTINCT tag_id FROM video_tags)').run();
