@@ -53,6 +53,7 @@ On Windows, no extra permission step is usually needed for `openCornField.cmd`.
 - Browse related videos based on shared tags, starring, and category
 - Leave comments, ratings, and timeline notes
 - Upload, capture, or auto-generate thumbnails
+- Hover the player seek bar to preview nearby frames
 - Use keyboard shortcuts and persistent player preferences
 
 ## Technical Notes
@@ -73,6 +74,7 @@ Open: [http://127.0.0.1:4300](http://127.0.0.1:4300)
 - Your media files stay in their original folders and are not copied by default.
 - App data is stored in `data/videoplayer.db`.
 - Generated or uploaded thumbnails are stored in `data/thumbnails/`.
+- Seek-bar hover previews are cached in `data/timeline-previews/` on demand.
 - `data/` is gitignored so your personal library state does not get committed to GitHub.
 
 ### Tech Stack
@@ -107,6 +109,7 @@ Open: [http://127.0.0.1:4300](http://127.0.0.1:4300)
 - `GET|POST /api/videos/:id/notes`, `PUT|DELETE /api/notes/:id`
 - `POST /api/videos/:id/thumbnail/upload`
 - `POST /api/videos/:id/thumbnail/capture`
+- `GET /api/videos/:id/previews`
 - `GET /api/videos/:id/related`
 - `GET /api/tags`, `GET /api/starrings`
 - `GET /media/*` (video streaming)

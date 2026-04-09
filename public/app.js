@@ -47,6 +47,7 @@ const state = {
     q: '',
     page: 1
   },
+  dbSummary: null,
   playerPrefs: {
     volume: initialVolume,
     muted: initialMuted
@@ -87,6 +88,7 @@ let libraryScanStatusRequest = null;
 
 const LIBRARY_SCAN_STATUS_POLL_MS = 900;
 const LIBRARY_SCAN_STATUS_IDLE_POLL_MS = 4000;
+const DB_SUMMARY_TTL_MS = 30000;
 
 function cleanupActiveView() {
   for (const fn of cleanups) {
@@ -361,6 +363,60 @@ function formatDuration(seconds) {
   return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
 
+function formatNumber(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return '0';
+  return Math.round(num).toLocaleString();
+}
+
+function formatBytes(bytes) {
+  const size = Number(bytes);
+  if (!Number.isFinite(size) || size <= 0) return '0 B';
+
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let unitIndex = 0;
+  let value = size;
+
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+
+  const digits = value >= 100 || unitIndex === 0 ? 0 : value >= 10 ? 1 : 2;
+  return `${value.toFixed(digits)} ${units[unitIndex]}`;
+}
+
+function formatCollectionDuration(seconds) {
+  const safeSeconds = Number(seconds);
+  if (!Number.isFinite(safeSeconds) || safeSeconds <= 0) return '0m';
+
+  const totalMinutes = Math.max(1, Math.round(safeSeconds / 60));
+  const days = Math.floor(totalMinutes / (60 * 24));
+  const hours = Math.floor((totalMinutes % (60 * 24)) / 60);
+  const minutes = totalMinutes % 60;
+
+  if (days > 0) {
+    return `${formatNumber(days)}d ${hours}h`;
+  }
+
+  if (totalMinutes >= 60) {
+    return `${formatNumber(Math.floor(totalMinutes / 60))}h ${minutes}m`;
+  }
+
+  return `${totalMinutes}m`;
+}
+
+function formatPercent(part, total) {
+  const numerator = Number(part);
+  const denominator = Number(total);
+
+  if (!Number.isFinite(numerator) || !Number.isFinite(denominator) || denominator <= 0) {
+    return '0%';
+  }
+
+  return `${Math.round((numerator / denominator) * 100)}%`;
+}
+
 function formatMarkerTimeValue(seconds) {
   if (!Number.isFinite(seconds) || seconds < 0) return '';
 
@@ -467,6 +523,24 @@ function showToast(message, isError = false) {
   setTimeout(() => {
     toast.remove();
   }, 2300);
+}
+
+function invalidateDatabaseSummary() {
+  state.dbSummary = null;
+}
+
+async function getDatabaseSummary({ force = false } = {}) {
+  const now = Date.now();
+  if (!force && state.dbSummary && now - state.dbSummary.loadedAt < DB_SUMMARY_TTL_MS) {
+    return state.dbSummary.data;
+  }
+
+  const data = await api('/api/database/summary');
+  state.dbSummary = {
+    data,
+    loadedAt: now
+  };
+  return data;
 }
 
 function syncLibraryScanningIndicator() {
@@ -1258,6 +1332,9 @@ async function renderVideoView(videoId) {
           <video id="videoEl" src="${escapeHtml(video.mediaUrl)}" preload="metadata"></video>
           <div class="player-controls" id="playerControls">
             <div class="progress-wrap">
+              <div id="timelinePreview" class="timeline-preview" aria-hidden="true">
+                <img id="timelinePreviewImage" class="timeline-preview-image" alt="" />
+              </div>
               <input id="progressRange" class="progress" type="range" min="0" max="1000" value="0" step="1" />
               <div id="noteMarkerLayer" class="note-marker-layer"></div>
             </div>
@@ -1436,15 +1513,26 @@ async function renderVideoView(videoId) {
     const muteBtn = document.getElementById('muteBtn');
     const volumeRange = document.getElementById('volumeRange');
     const progressRange = document.getElementById('progressRange');
+    const progressWrap = progressRange.closest('.progress-wrap');
+    const timelinePreview = document.getElementById('timelinePreview');
+    const timelinePreviewImage = document.getElementById('timelinePreviewImage');
     const noteMarkerLayer = document.getElementById('noteMarkerLayer');
     const timeLabel = document.getElementById('timeLabel');
     const notesList = document.getElementById('notesList');
 
     const relatedPromise = refreshRelatedVideos({ force: true });
+    const timelinePreviewState = {
+      manifest: null,
+      request: null,
+      available: null,
+      currentUrl: '',
+      preloadedUrls: new Set()
+    };
 
     let hideTimer = null;
     const controlsHideMsRaw = Number(state.settings?.controlsHideMs ?? 2500);
     const controlsHideMs = Number.isFinite(controlsHideMsRaw) ? controlsHideMsRaw : 2500;
+    let hoveredProgressRatio = null;
 
     function showControls() {
       playerControls.classList.remove('hidden');
@@ -1462,6 +1550,158 @@ async function renderVideoView(videoId) {
 
     function updateMuteButtonLabel() {
       muteBtn.textContent = videoEl.muted || videoEl.volume === 0 ? 'Unmute' : 'Mute';
+    }
+
+    function clampProgressRatio(ratio) {
+      return Math.max(0, Math.min(1, Number(ratio) || 0));
+    }
+
+    function getProgressRatioFromClientX(clientX) {
+      const rect = progressRange.getBoundingClientRect();
+      if (!Number.isFinite(rect.width) || rect.width <= 0) return null;
+      return clampProgressRatio((clientX - rect.left) / rect.width);
+    }
+
+    function preloadTimelinePreviewItem(item) {
+      if (!item?.imageUrl || timelinePreviewState.preloadedUrls.has(item.imageUrl)) {
+        return;
+      }
+
+      timelinePreviewState.preloadedUrls.add(item.imageUrl);
+      const img = new Image();
+      img.src = item.imageUrl;
+    }
+
+    async function ensureTimelinePreviewManifestLoaded() {
+      if (timelinePreviewState.manifest) {
+        return timelinePreviewState.manifest;
+      }
+
+      if (timelinePreviewState.available === false) {
+        return null;
+      }
+
+      if (timelinePreviewState.request) {
+        return timelinePreviewState.request;
+      }
+
+      timelinePreviewState.request = api(`/api/videos/${videoId}/previews`)
+        .then((payload) => {
+          if (token !== currentRenderToken) {
+            return null;
+          }
+
+          const items = Array.isArray(payload?.items) ? payload.items.filter((item) => item?.imageUrl) : [];
+          if (!payload?.available || items.length === 0) {
+            timelinePreviewState.available = false;
+            return null;
+          }
+
+          const manifest = {
+            duration: Number(payload.duration || 0),
+            intervalSec: Math.max(1, Number(payload.intervalSec || 0)),
+            items
+          };
+
+          timelinePreviewState.manifest = manifest;
+          timelinePreviewState.available = true;
+          preloadTimelinePreviewItem(items[0]);
+          preloadTimelinePreviewItem(items[1]);
+          return manifest;
+        })
+        .catch(() => {
+          timelinePreviewState.available = false;
+          return null;
+        })
+        .finally(() => {
+          timelinePreviewState.request = null;
+        });
+
+      return timelinePreviewState.request;
+    }
+
+    function getTimelinePreviewDuration() {
+      const manifestDuration = Number(timelinePreviewState.manifest?.duration || 0);
+      if (manifestDuration > 0) {
+        return manifestDuration;
+      }
+
+      const videoDuration = Number(videoEl.duration || 0);
+      if (videoDuration > 0) {
+        return videoDuration;
+      }
+
+      const fallbackDuration = Number(video.duration || 0);
+      return fallbackDuration > 0 ? fallbackDuration : 0;
+    }
+
+    function getTimelinePreviewSelection(ratio) {
+      const items = timelinePreviewState.manifest?.items || [];
+      if (items.length === 0) {
+        return null;
+      }
+
+      const safeRatio = clampProgressRatio(ratio);
+      const duration = getTimelinePreviewDuration();
+      const targetTime = duration > 0 ? safeRatio * duration : safeRatio * Math.max(1, items.length - 1);
+      const roughIndex = timelinePreviewState.manifest?.intervalSec
+        ? Math.round(targetTime / timelinePreviewState.manifest.intervalSec)
+        : Math.round(safeRatio * (items.length - 1));
+      const index = Math.max(0, Math.min(items.length - 1, roughIndex));
+
+      return { item: items[index], index };
+    }
+
+    function positionTimelinePreview(ratio) {
+      const rect = progressWrap?.getBoundingClientRect();
+      if (!rect || !Number.isFinite(rect.width) || rect.width <= 0) {
+        return;
+      }
+
+      const safeRatio = clampProgressRatio(ratio);
+      const halfWidth = timelinePreview.offsetWidth / 2 || 0;
+      const leftPx = safeRatio * rect.width;
+      const clampedLeft = Math.max(halfWidth, Math.min(rect.width - halfWidth, leftPx));
+      timelinePreview.style.left = `${clampedLeft}px`;
+    }
+
+    function hideTimelinePreview() {
+      hoveredProgressRatio = null;
+      timelinePreview.classList.remove('is-visible');
+    }
+
+    function renderTimelinePreview(ratio) {
+      const selection = getTimelinePreviewSelection(ratio);
+      if (!selection?.item?.imageUrl) {
+        timelinePreview.classList.remove('is-visible');
+        return;
+      }
+
+      if (timelinePreviewState.currentUrl !== selection.item.imageUrl) {
+        timelinePreviewImage.src = selection.item.imageUrl;
+        timelinePreviewState.currentUrl = selection.item.imageUrl;
+      }
+
+      positionTimelinePreview(ratio);
+      timelinePreview.classList.add('is-visible');
+      preloadTimelinePreviewItem(timelinePreviewState.manifest?.items?.[selection.index + 1]);
+      preloadTimelinePreviewItem(timelinePreviewState.manifest?.items?.[selection.index - 1]);
+    }
+
+    function requestTimelinePreviewForRatio(ratio) {
+      hoveredProgressRatio = clampProgressRatio(ratio);
+      if (timelinePreviewState.manifest) {
+        renderTimelinePreview(hoveredProgressRatio);
+        return;
+      }
+
+      ensureTimelinePreviewManifestLoaded().then((manifest) => {
+        if (!manifest || token !== currentRenderToken || hoveredProgressRatio === null) {
+          return;
+        }
+
+        renderTimelinePreview(hoveredProgressRatio);
+      });
     }
 
     function setVolumeLevel(nextVolume) {
@@ -1583,6 +1823,7 @@ async function renderVideoView(videoId) {
       volumeRange.value = String(videoEl.volume);
       updateRangeVisual(volumeRange, videoEl.volume);
       updateMuteButtonLabel();
+      ensureTimelinePreviewManifestLoaded();
       if (playbackToRestore && !playbackToRestore.wasPaused) {
         requestPlay();
       }
@@ -1609,16 +1850,16 @@ async function renderVideoView(videoId) {
 
     function seekToProgressRatio(ratio) {
       if (!Number.isFinite(videoEl.duration) || videoEl.duration <= 0) return;
-      const safeRatio = Math.max(0, Math.min(1, ratio));
+      const safeRatio = clampProgressRatio(ratio);
       const next = safeRatio * videoEl.duration;
       videoEl.currentTime = next;
       syncProgressFromVideo();
     }
 
     function seekToClientPosition(clientX) {
-      const rect = progressRange.getBoundingClientRect();
-      if (!Number.isFinite(rect.width) || rect.width <= 0) return;
-      seekToProgressRatio((clientX - rect.left) / rect.width);
+      const ratio = getProgressRatioFromClientX(clientX);
+      if (ratio === null) return;
+      seekToProgressRatio(ratio);
     }
 
     let isScrubbingProgress = false;
@@ -1631,28 +1872,63 @@ async function renderVideoView(videoId) {
       if (!Number.isFinite(videoEl.duration) || videoEl.duration <= 0) return;
       isScrubbingProgress = true;
       progressRange.setPointerCapture?.(event.pointerId);
+      const ratio = getProgressRatioFromClientX(event.clientX);
+      if (ratio !== null) {
+        requestTimelinePreviewForRatio(ratio);
+      }
       seekToClientPosition(event.clientX);
       event.preventDefault();
     });
 
     progressRange.addEventListener('pointermove', (event) => {
+      const ratio = getProgressRatioFromClientX(event.clientX);
+      if (ratio !== null) {
+        requestTimelinePreviewForRatio(ratio);
+      }
       if (!isScrubbingProgress) return;
       seekToClientPosition(event.clientX);
+    });
+
+    progressRange.addEventListener('pointerenter', (event) => {
+      const ratio = getProgressRatioFromClientX(event.clientX);
+      if (ratio !== null) {
+        requestTimelinePreviewForRatio(ratio);
+      } else {
+        ensureTimelinePreviewManifestLoaded();
+      }
+    });
+
+    progressRange.addEventListener('pointerleave', () => {
+      hideTimelinePreview();
+    });
+
+    progressRange.addEventListener('blur', () => {
+      hideTimelinePreview();
     });
 
     const stopProgressScrub = (event) => {
       if (!isScrubbingProgress) return;
       if (typeof event.clientX === 'number') {
+        const ratio = getProgressRatioFromClientX(event.clientX);
+        if (ratio !== null) {
+          requestTimelinePreviewForRatio(ratio);
+        }
         seekToClientPosition(event.clientX);
       }
       if (typeof event.pointerId === 'number' && progressRange.hasPointerCapture?.(event.pointerId)) {
         progressRange.releasePointerCapture(event.pointerId);
       }
       isScrubbingProgress = false;
+      if (event.pointerType && event.pointerType !== 'mouse') {
+        hideTimelinePreview();
+      }
     };
 
     progressRange.addEventListener('pointerup', stopProgressScrub);
-    progressRange.addEventListener('pointercancel', stopProgressScrub);
+    progressRange.addEventListener('pointercancel', (event) => {
+      stopProgressScrub(event);
+      hideTimelinePreview();
+    });
     progressRange.addEventListener('lostpointercapture', () => {
       isScrubbingProgress = false;
     });
@@ -2065,6 +2341,7 @@ async function renderVideoView(videoId) {
     addCleanup(() => {
       if (hideTimer) clearTimeout(hideTimer);
       videoEl.pause();
+      hideTimelinePreview();
     });
 
     if (typeof ResizeObserver === 'function') {
@@ -2143,11 +2420,17 @@ async function renderDatabaseView() {
       query.set('q', state.dbFilters.q);
     }
 
-    const data = await api(`/api/videos/admin?${query.toString()}`);
+    const [summary, data] = await Promise.all([getDatabaseSummary(), api(`/api/videos/admin?${query.toString()}`)]);
     if (token !== currentRenderToken) return;
 
     const totalPages = Math.max(1, Math.ceil((data.total || 0) / data.pageSize));
     state.dbFilters.page = Math.min(state.dbFilters.page, totalPages);
+    const totals = summary?.totals || {};
+    const storage = summary?.storage || {};
+    const samples = summary?.samples || {};
+    const totalVideos = Number(totals.totalVideos || 0);
+    const thumbnailCoverage = totalVideos > 0 ? formatPercent(totals.thumbnailCount, totalVideos) : '0%';
+    const previewCoverage = totalVideos > 0 ? formatPercent(totals.previewCount, totalVideos) : '0%';
 
     const rowsHtml = (data.items || [])
       .map(
@@ -2170,16 +2453,110 @@ async function renderDatabaseView() {
       )
       .join('');
 
+    const thumbnailSamplesHtml = (samples.thumbnails || [])
+      .map(
+        (item) => `
+          <button type="button" class="db-media-card" data-db-summary-open="${item.videoId}">
+            <img src="${escapeHtml(item.imageUrl)}" alt="${escapeHtml(item.displayTitle || `Thumbnail ${item.videoId}`)}" loading="lazy" />
+            <div class="db-media-card-body">
+              <strong>${escapeHtml(item.displayTitle || `Video ${item.videoId}`)}</strong>
+              <span class="muted">Thumbnail sample</span>
+            </div>
+          </button>
+        `
+      )
+      .join('');
+
+    const previewSamplesHtml = (samples.previews || [])
+      .map(
+        (item) => `
+          <button type="button" class="db-media-card" data-db-summary-open="${item.videoId}">
+            <img src="${escapeHtml(item.imageUrl)}" alt="${escapeHtml(item.displayTitle || `Preview ${item.videoId}`)}" loading="lazy" />
+            <div class="db-media-card-body">
+              <strong>${escapeHtml(item.displayTitle || `Video ${item.videoId}`)}</strong>
+              <span class="muted">${formatNumber(item.frameCount || 0)} cached frames</span>
+            </div>
+          </button>
+        `
+      )
+      .join('');
+
     mainEl.innerHTML = `
       <section class="section-panel">
         <div class="panel-body">
-          <h2 class="section-title">Video DB</h2>
+          <div class="db-header">
+            <div>
+              <h2 class="section-title">Video DB</h2>
+              <div class="muted">Overview of indexed videos and CornField-generated database assets.</div>
+            </div>
+            <div class="db-summary-stamp">${totals.lastUpdatedAt ? `Updated ${escapeHtml(formatDateTime(totals.lastUpdatedAt))}` : 'No indexed videos yet'}</div>
+          </div>
+          <div class="db-summary-grid">
+            <article class="db-summary-card">
+              <span class="db-summary-label">Indexed Videos</span>
+              <strong>${formatNumber(totalVideos)}</strong>
+              <div class="db-summary-value-sub">${formatCollectionDuration(totals.totalDurationSec)} runtime</div>
+              <div class="db-summary-inline">
+                <span>${formatNumber(totals.totalViews || 0)} views</span>
+                <span>${formatNumber(totals.missingVideos || 0)} missing</span>
+              </div>
+            </article>
+            <article class="db-summary-card">
+              <span class="db-summary-label">Coverage</span>
+              <strong>${thumbnailCoverage}</strong>
+              <div class="db-summary-value-sub">${formatNumber(totals.thumbnailCount || 0)} videos with thumbnails</div>
+              <div class="db-summary-inline">
+                <span>${previewCoverage} previews</span>
+                <span>${formatNumber(totals.previewFrameCount || 0)} frames cached</span>
+              </div>
+            </article>
+            <article class="db-summary-card">
+              <span class="db-summary-label">Metadata</span>
+              <strong>${formatNumber(totals.tagCount || 0)}</strong>
+              <div class="db-summary-value-sub">tags across ${formatNumber(totals.categoryCount || 0)} categories</div>
+              <div class="db-summary-inline">
+                <span>${formatNumber(totals.starringCount || 0)} starrings</span>
+                <span>${formatNumber(totals.commentCount || 0)} comments</span>
+                <span>${formatNumber(totals.noteCount || 0)} notes</span>
+              </div>
+            </article>
+            <article class="db-summary-card">
+              <span class="db-summary-label">Generated Data</span>
+              <strong>${formatBytes(storage.generatedBytes || 0)}</strong>
+              <div class="db-summary-value-sub">${formatBytes(storage.sqliteBytes || 0)} SQLite + ${formatBytes(storage.thumbnailBytes || 0)} thumbnails</div>
+              <div class="db-summary-inline">
+                <span>${formatBytes(storage.previewBytes || 0)} previews</span>
+                <span>${formatNumber(storage.thumbnailFileCount || 0)} thumbs</span>
+                <span>${formatNumber(storage.previewManifestCount || 0)} preview sets</span>
+              </div>
+            </article>
+          </div>
+          <div class="db-sample-grid">
+            <section class="db-sample-panel">
+              <div class="db-sample-head">
+                <h3>Thumbnail Samples</h3>
+                <span class="muted">${formatNumber(samples.thumbnails?.length || 0)} shown</span>
+              </div>
+              <div class="db-media-grid">
+                ${thumbnailSamplesHtml || '<div class="muted">No thumbnail samples yet.</div>'}
+              </div>
+            </section>
+            <section class="db-sample-panel">
+              <div class="db-sample-head">
+                <h3>Frame Preview Samples</h3>
+                <span class="muted">${formatNumber(samples.previews?.length || 0)} shown</span>
+              </div>
+              <div class="db-media-grid">
+                ${previewSamplesHtml || '<div class="muted">No cached frame previews yet.</div>'}
+              </div>
+            </section>
+          </div>
           <div class="db-toolbar">
             <input id="dbSearchInput" type="search" placeholder="Search title, file, category, tag, starring..." value="${escapeHtml(state.dbFilters.q || '')}" />
             <button id="dbApplyBtn" class="primary">Search</button>
             <button id="dbRefreshBtn">Refresh</button>
           </div>
-          <div class="status">${data.total} rows | page ${state.dbFilters.page}/${totalPages}</div>
+          <div class="status">${formatNumber(data.total || 0)} matching rows | page ${state.dbFilters.page}/${totalPages}</div>
           <div class="table-scroll">
             <table class="db-table">
               <thead>
@@ -2216,7 +2593,10 @@ async function renderDatabaseView() {
     };
 
     document.getElementById('dbApplyBtn').addEventListener('click', applySearch);
-    document.getElementById('dbRefreshBtn').addEventListener('click', () => renderRoute());
+    document.getElementById('dbRefreshBtn').addEventListener('click', () => {
+      invalidateDatabaseSummary();
+      renderRoute();
+    });
     dbSearchInput.addEventListener('keydown', (event) => {
       if (event.key === 'Enter') applySearch();
     });
@@ -2238,6 +2618,15 @@ async function renderDatabaseView() {
       });
     });
 
+    document.querySelectorAll('[data-db-summary-open]').forEach((btn) => {
+      btn.addEventListener('click', (event) => {
+        const videoId = Number(event.currentTarget.getAttribute('data-db-summary-open') || 0);
+        if (videoId > 0) {
+          setHash(`#/video/${videoId}`);
+        }
+      });
+    });
+
     document.querySelectorAll('[data-db-save]').forEach((btn) => {
       btn.addEventListener('click', async (event) => {
         const tr = event.currentTarget.closest('tr');
@@ -2256,6 +2645,7 @@ async function renderDatabaseView() {
             method: 'PUT',
             body: JSON.stringify({ displayTitle, category, viewCount })
           });
+          invalidateDatabaseSummary();
           showToast('Row updated');
         } catch (error) {
           showToast(error.message, true);
@@ -2276,6 +2666,7 @@ async function renderDatabaseView() {
             method: 'DELETE',
             body: JSON.stringify({ deleteFile: true })
           });
+          invalidateDatabaseSummary();
           showToast('Video deleted');
           renderRoute();
         } catch (error) {

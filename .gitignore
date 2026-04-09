@@ -11,3 +11,6 @@ data/*
 !data/thumbnails/
 data/thumbnails/*
 !data/thumbnails/.gitkeep
+!data/timeline-previews/
+data/timeline-previews/*
+!data/timeline-previews/.gitkeep
