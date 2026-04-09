@@ -440,6 +440,41 @@ textarea {
   min-height: 1.28rem;
 }
 
+.timeline-preview {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 0.72rem);
+  width: min(198px, 37vw);
+  padding: 0.28rem;
+  border: 1px solid rgba(255, 209, 102, 0.24);
+  border-radius: 0.82rem;
+  background: rgba(10, 14, 22, 0.96);
+  box-shadow: 0 18px 30px rgba(0, 0, 0, 0.36);
+  overflow: hidden;
+  pointer-events: none;
+  opacity: 0;
+  transform: translate(-50%, 0.28rem) scale(0.985);
+  transition: opacity 0.14s ease, transform 0.14s ease;
+  z-index: 4;
+  will-change: left, opacity, transform;
+}
+
+.timeline-preview.is-visible {
+  opacity: 1;
+  transform: translate(-50%, 0) scale(1);
+}
+
+.timeline-preview-image {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  border-radius: 0.56rem;
+  background:
+    linear-gradient(135deg, rgba(245, 188, 66, 0.16), rgba(78, 92, 118, 0.24)),
+    rgba(17, 22, 33, 0.96);
+}
+
 .progress,
 .volume-slider {
   display: block;
@@ -1067,6 +1102,10 @@ textarea {
 
   .volume-slider {
     width: 84px;
+  }
+
+  .timeline-preview {
+    width: min(154px, 48vw);
   }
 
   main {

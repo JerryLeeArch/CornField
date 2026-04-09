@@ -21,16 +21,23 @@ import {
   isoNow
 } from './db.js';
 import { previewLibraryScan, scanLibrary } from './media-indexer.js';
+import { deleteTimelinePreviewCache, ensureTimelinePreviewManifest, timelinePreviewRoot } from './timeline-previews.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const projectRoot = path.resolve(__dirname, '..');
 const publicRoot = path.join(projectRoot, 'public');
+const dataRoot = path.join(projectRoot, 'data');
 const thumbnailRoot = path.join(projectRoot, 'data', 'thumbnails');
+const sqliteFilePaths = [path.join(dataRoot, 'videoplayer.db'), path.join(dataRoot, 'videoplayer.db-wal'), path.join(dataRoot, 'videoplayer.db-shm')];
 const execFileAsync = promisify(execFile);
 
 if (!fs.existsSync(thumbnailRoot)) {
   fs.mkdirSync(thumbnailRoot, { recursive: true });
+}
+
+if (!fs.existsSync(timelinePreviewRoot)) {
+  fs.mkdirSync(timelinePreviewRoot, { recursive: true });
 }
 
 const app = Fastify({
@@ -46,6 +53,11 @@ app.register(fastifyStatic, {
 app.register(fastifyStatic, {
   root: thumbnailRoot,
   prefix: '/thumbnails/',
+  decorateReply: false
+});
+app.register(fastifyStatic, {
+  root: timelinePreviewRoot,
+  prefix: '/timeline-previews/',
   decorateReply: false
 });
 
@@ -307,6 +319,220 @@ function serializeVideoRow(row) {
     tags,
     starrings,
     mediaUrl: `/media/${mediaPath}`
+  };
+}
+
+function parsePreviewDirectoryVideoId(dirName) {
+  const match = /^video-(\d+)$/.exec(String(dirName || ''));
+  if (!match) {
+    return null;
+  }
+
+  const videoId = Number(match[1]);
+  return Number.isInteger(videoId) && videoId > 0 ? videoId : null;
+}
+
+async function getFileSizeSafe(absPath) {
+  try {
+    const stat = await fsp.stat(absPath);
+    return stat.isFile() ? stat.size : 0;
+  } catch {
+    return 0;
+  }
+}
+
+async function walkDirectoryStats(rootPath, onFile) {
+  let entries;
+
+  try {
+    entries = await fsp.readdir(rootPath, { withFileTypes: true });
+  } catch {
+    return { bytes: 0, fileCount: 0 };
+  }
+
+  let bytes = 0;
+  let fileCount = 0;
+
+  for (const entry of entries) {
+    const absPath = path.join(rootPath, entry.name);
+
+    if (entry.isDirectory()) {
+      const nested = await walkDirectoryStats(absPath, onFile);
+      bytes += nested.bytes;
+      fileCount += nested.fileCount;
+      continue;
+    }
+
+    if (!entry.isFile()) {
+      continue;
+    }
+
+    const stat = await fsp.stat(absPath).catch(() => null);
+    if (!stat) {
+      continue;
+    }
+
+    bytes += stat.size;
+    fileCount += 1;
+    await onFile?.({ absPath, entryName: entry.name, stat });
+  }
+
+  return { bytes, fileCount };
+}
+
+async function readPreviewSample(videoId) {
+  const manifestPath = path.join(timelinePreviewRoot, `video-${videoId}`, 'manifest.json');
+  let rawManifest;
+
+  try {
+    rawManifest = await fsp.readFile(manifestPath, 'utf8');
+  } catch {
+    return null;
+  }
+
+  let manifest;
+  try {
+    manifest = JSON.parse(rawManifest);
+  } catch {
+    return null;
+  }
+
+  const items = Array.isArray(manifest?.items) ? manifest.items : [];
+  const selectedItem = items[Math.floor(items.length / 2)] || items[0];
+
+  if (!selectedItem?.imageUrl) {
+    return null;
+  }
+
+  const row = db
+    .prepare("SELECT id AS videoId, display_title AS displayTitle FROM videos WHERE id = ? AND is_missing = 0 AND file_name NOT LIKE '._%'")
+    .get(videoId);
+
+  if (!row) {
+    return null;
+  }
+
+  return {
+    videoId: row.videoId,
+    displayTitle: row.displayTitle,
+    imageUrl: selectedItem.imageUrl,
+    frameCount: items.length
+  };
+}
+
+async function buildDatabaseSummary() {
+  const overview = db
+    .prepare(`
+      SELECT
+        (SELECT COUNT(*) FROM videos WHERE file_name NOT LIKE '._%' AND is_missing = 0) AS total_videos,
+        (SELECT COUNT(*) FROM videos WHERE file_name NOT LIKE '._%' AND is_missing = 1) AS missing_videos,
+        (SELECT COUNT(*) FROM videos WHERE file_name NOT LIKE '._%' AND is_missing = 0 AND thumbnail_path IS NOT NULL AND TRIM(thumbnail_path) <> '') AS thumbnail_count,
+        (SELECT COUNT(DISTINCT category) FROM videos WHERE file_name NOT LIKE '._%' AND is_missing = 0 AND TRIM(category) <> '') AS category_count,
+        (SELECT COALESCE(SUM(duration), 0) FROM videos WHERE file_name NOT LIKE '._%' AND is_missing = 0) AS total_duration_sec,
+        (SELECT COALESCE(SUM(view_count), 0) FROM videos WHERE file_name NOT LIKE '._%' AND is_missing = 0) AS total_views,
+        (SELECT COUNT(*) FROM tags) AS tag_count,
+        (SELECT COUNT(*) FROM starrings) AS starring_count,
+        (SELECT COUNT(*) FROM comments) AS comment_count,
+        (SELECT COUNT(*) FROM timeline_notes) AS note_count,
+        (SELECT MAX(updated_at) FROM videos WHERE file_name NOT LIKE '._%' AND is_missing = 0) AS last_updated_at
+    `)
+    .get();
+
+  const [thumbnailStats, sqliteSizes, previewRootEntries, thumbnailSamples] = await Promise.all([
+    walkDirectoryStats(thumbnailRoot),
+    Promise.all(sqliteFilePaths.map((absPath) => getFileSizeSafe(absPath))),
+    fsp.readdir(timelinePreviewRoot, { withFileTypes: true }).catch(() => []),
+    Promise.resolve(
+      db
+        .prepare(`
+          SELECT
+            id AS videoId,
+            display_title AS displayTitle,
+            thumbnail_path AS imageUrl
+          FROM videos
+          WHERE is_missing = 0
+            AND file_name NOT LIKE '._%'
+            AND thumbnail_path IS NOT NULL
+            AND TRIM(thumbnail_path) <> ''
+          ORDER BY updated_at DESC, id DESC
+          LIMIT 6
+        `)
+        .all()
+    )
+  ]);
+
+  const previewVideoIds = previewRootEntries
+    .map((entry) => (entry.isDirectory() ? parsePreviewDirectoryVideoId(entry.name) : null))
+    .filter((videoId) => Number.isInteger(videoId));
+
+  let previewManifestCount = 0;
+  let previewFrameCount = 0;
+  let previewBytes = 0;
+  let previewFileCount = 0;
+
+  for (const videoId of previewVideoIds) {
+    const previewDir = path.join(timelinePreviewRoot, `video-${videoId}`);
+    const stats = await walkDirectoryStats(previewDir, ({ entryName }) => {
+      if (entryName === 'manifest.json') {
+        previewManifestCount += 1;
+        return;
+      }
+
+      if (/\.(jpe?g|png|webp)$/i.test(entryName)) {
+        previewFrameCount += 1;
+      }
+    });
+
+    previewBytes += stats.bytes;
+    previewFileCount += stats.fileCount;
+  }
+
+  const samplePreviews = [];
+  const sortedPreviewVideoIds = [...previewVideoIds].sort((a, b) => b - a);
+
+  for (const videoId of sortedPreviewVideoIds) {
+    const sample = await readPreviewSample(videoId);
+    if (!sample) {
+      continue;
+    }
+
+    samplePreviews.push(sample);
+    if (samplePreviews.length >= 6) {
+      break;
+    }
+  }
+
+  const sqliteBytes = sqliteSizes.reduce((sum, value) => sum + Number(value || 0), 0);
+
+  return {
+    totals: {
+      totalVideos: Number(overview?.total_videos || 0),
+      missingVideos: Number(overview?.missing_videos || 0),
+      thumbnailCount: Number(overview?.thumbnail_count || 0),
+      previewCount: previewVideoIds.length,
+      previewFrameCount,
+      categoryCount: Number(overview?.category_count || 0),
+      totalDurationSec: Number(overview?.total_duration_sec || 0),
+      totalViews: Number(overview?.total_views || 0),
+      tagCount: Number(overview?.tag_count || 0),
+      starringCount: Number(overview?.starring_count || 0),
+      commentCount: Number(overview?.comment_count || 0),
+      noteCount: Number(overview?.note_count || 0),
+      lastUpdatedAt: overview?.last_updated_at || null
+    },
+    storage: {
+      sqliteBytes,
+      thumbnailBytes: thumbnailStats.bytes,
+      previewBytes,
+      generatedBytes: sqliteBytes + thumbnailStats.bytes + previewBytes,
+      thumbnailFileCount: thumbnailStats.fileCount,
+      previewFileCount,
+      previewManifestCount
+    },
+    samples: {
+      thumbnails: thumbnailSamples,
+      previews: samplePreviews
+    }
   };
 }
 
@@ -801,6 +1027,14 @@ app.get('/api/videos/admin', async (request) => {
   };
 });
 
+app.get('/api/database/summary', async (request, reply) => {
+  try {
+    return await buildDatabaseSummary();
+  } catch (error) {
+    return reply.code(500).send({ error: error.message || 'Failed to build database summary.' });
+  }
+});
+
 app.get('/api/videos/:id', async (request, reply) => {
   const id = Number(request.params.id);
   if (!Number.isInteger(id) || id <= 0) {
@@ -831,6 +1065,57 @@ app.get('/api/videos/:id', async (request, reply) => {
   }
 
   return { video: serializeVideoRow(row) };
+});
+
+app.get('/api/videos/:id/previews', async (request, reply) => {
+  const id = Number(request.params.id);
+  if (!Number.isInteger(id) || id <= 0) {
+    return reply.code(400).send({ error: 'Invalid video id' });
+  }
+
+  const row = db.prepare('SELECT relative_path AS relativePath, duration FROM videos WHERE id = ?').get(id);
+  if (!row) {
+    return reply.code(404).send({ error: 'Video not found' });
+  }
+
+  let libraryRoot;
+  try {
+    libraryRoot = getLibraryRootOrThrow();
+  } catch (error) {
+    return reply.code(400).send({ error: error.message });
+  }
+
+  const absPath = path.resolve(libraryRoot, row.relativePath);
+  if (!isPathInsideRoot(libraryRoot, absPath)) {
+    return reply.code(403).send({ error: 'Path is outside library root' });
+  }
+
+  try {
+    const stat = await fsp.stat(absPath);
+    if (!stat.isFile()) {
+      return { available: false, items: [] };
+    }
+  } catch {
+    return { available: false, items: [] };
+  }
+
+  const manifest = await ensureTimelinePreviewManifest({
+    videoId: id,
+    absPath,
+    durationSec: Number(row.duration || 0)
+  });
+
+  if (!manifest) {
+    return { available: false, items: [] };
+  }
+
+  return {
+    available: true,
+    duration: manifest.duration,
+    intervalSec: manifest.intervalSec,
+    width: manifest.width,
+    items: manifest.items
+  };
 });
 
 app.put('/api/videos/:id/metadata', async (request, reply) => {
@@ -982,6 +1267,7 @@ app.delete('/api/videos/:id', async (request, reply) => {
   db.prepare('DELETE FROM videos WHERE id = ?').run(id);
   db.prepare('DELETE FROM tags WHERE id NOT IN (SELECT DISTINCT tag_id FROM video_tags)').run();
   db.prepare('DELETE FROM starrings WHERE id NOT IN (SELECT DISTINCT starring_id FROM video_starrings)').run();
+  await deleteTimelinePreviewCache(id);
 
   return { ok: true, fileDeleted };
 });
