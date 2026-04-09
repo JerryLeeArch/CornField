@@ -178,6 +178,24 @@ const selectThumbnailMissingRelativePathsStmt = db.prepare(`
   WHERE thumbnail_path IS NULL OR TRIM(thumbnail_path) = ''
 `);
 const updateVideoThumbnailStmt = db.prepare('UPDATE videos SET thumbnail_path = ?, thumbnail_time = ?, updated_at = ? WHERE id = ?');
+const clearInterruptedScanSessionsStmt = db.prepare('UPDATE videos SET scan_session_id = NULL WHERE scan_session_id IS NOT NULL');
+const finalizeScanStmt = db.transaction((scanSessionId, completedAt) => {
+  db.prepare('DELETE FROM videos WHERE scan_session_id IS NULL OR scan_session_id <> ?').run(scanSessionId);
+  db.prepare('UPDATE videos SET last_scanned_at = ?, scan_session_id = NULL WHERE scan_session_id = ?').run(completedAt, scanSessionId);
+  db.prepare('DELETE FROM tags WHERE id NOT IN (SELECT DISTINCT tag_id FROM video_tags)').run();
+  db.prepare('DELETE FROM starrings WHERE id NOT IN (SELECT DISTINCT starring_id FROM video_starrings)').run();
+});
+
+function createScanSessionId(startedAt) {
+  const startedAtKey = String(startedAt || isoNow()).replaceAll(/[^0-9TZ]/g, '');
+  const randomPart = Math.random().toString(36).slice(2, 10);
+  return `scan-${startedAtKey}-${randomPart}`;
+}
+
+function logScanInfo(message, details = '') {
+  const suffix = details ? ` ${details}` : '';
+  console.info(`[library-scan] ${message}${suffix}`);
+}
 
 function calculateScanDiff(files) {
   const existingRows = selectRelativePathsStmt.all();
@@ -306,6 +324,7 @@ INSERT INTO videos (
   width,
   height,
   quality_bucket,
+  scan_session_id,
   last_scanned_at,
   is_missing,
   created_at,
@@ -320,7 +339,8 @@ VALUES (
   @width,
   @height,
   @qualityBucket,
-  @scannedAt,
+  @scanSessionId,
+  NULL,
   0,
   @now,
   @now
@@ -332,10 +352,20 @@ ON CONFLICT(relative_path) DO UPDATE SET
   width = CASE WHEN excluded.width > 0 THEN excluded.width ELSE videos.width END,
   height = CASE WHEN excluded.height > 0 THEN excluded.height ELSE videos.height END,
   quality_bucket = CASE WHEN excluded.height > 0 THEN excluded.quality_bucket ELSE videos.quality_bucket END,
-  last_scanned_at = excluded.last_scanned_at,
+  scan_session_id = excluded.scan_session_id,
   is_missing = 0,
   updated_at = excluded.updated_at
 `);
+
+export function cleanupInterruptedLibraryScanState() {
+  const result = clearInterruptedScanSessionsStmt.run();
+
+  if (result.changes > 0) {
+    logScanInfo('cleared interrupted scan markers', `rows=${result.changes}`);
+  }
+
+  return result.changes;
+}
 
 export async function previewLibraryScan(libraryRoot) {
   const root = await ensureLibraryRoot(libraryRoot);
@@ -355,15 +385,18 @@ export async function previewLibraryScan(libraryRoot) {
 export async function scanLibrary(libraryRoot, options = {}) {
   const { onProgress } = options;
   const root = await ensureLibraryRoot(libraryRoot);
+  cleanupInterruptedLibraryScanState();
   onProgress?.({
     phase: 'discovering',
     scannedCount: 0,
     totalCount: null
   });
   const startAt = isoNow();
+  const scanSessionId = createScanSessionId(startAt);
   const files = await walkVideoFiles(root);
   const diff = calculateScanDiff(files);
   let autoThumbnailsCreated = 0;
+  logScanInfo('started', `session=${scanSessionId} files=${files.length}`);
   onProgress?.({
     phase: 'processing',
     scannedCount: 0,
@@ -385,7 +418,7 @@ export async function scanLibrary(libraryRoot, options = {}) {
       width: probed.width,
       height: probed.height,
       qualityBucket: probed.qualityBucket,
-      scannedAt: startAt,
+      scanSessionId,
       now
     });
 
@@ -412,9 +445,8 @@ export async function scanLibrary(libraryRoot, options = {}) {
     totalCount: files.length
   });
 
-  db.prepare('DELETE FROM videos WHERE last_scanned_at IS NULL OR last_scanned_at < ?').run(startAt);
-  db.prepare('DELETE FROM tags WHERE id NOT IN (SELECT DISTINCT tag_id FROM video_tags)').run();
-  db.prepare('DELETE FROM starrings WHERE id NOT IN (SELECT DISTINCT starring_id FROM video_starrings)').run();
+  finalizeScanStmt(scanSessionId, startAt);
+  logScanInfo('finished', `session=${scanSessionId} files=${files.length} autoThumbnailsCreated=${autoThumbnailsCreated}`);
 
   return {
     scannedCount: files.length,

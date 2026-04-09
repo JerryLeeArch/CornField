@@ -15,6 +15,7 @@ if (!fs.existsSync(dataDir)) {
 const dbPath = path.join(dataDir, 'videoplayer.db');
 export const db = new Database(dbPath);
 db.pragma('journal_mode = WAL');
+db.pragma('foreign_keys = ON');
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS videos (
@@ -29,6 +30,7 @@ CREATE TABLE IF NOT EXISTS videos (
   width INTEGER NOT NULL DEFAULT 0,
   height INTEGER NOT NULL DEFAULT 0,
   quality_bucket TEXT NOT NULL DEFAULT 'unknown',
+  scan_session_id TEXT,
   category TEXT NOT NULL DEFAULT '',
   view_count INTEGER NOT NULL DEFAULT 0,
   thumbnail_path TEXT,
@@ -97,6 +99,15 @@ CREATE TABLE IF NOT EXISTS settings (
   value TEXT NOT NULL
 );
 `);
+
+const videoColumns = db.prepare("PRAGMA table_info(videos)").all();
+const hasScanSessionIdColumn = videoColumns.some((column) => column.name === 'scan_session_id');
+
+if (!hasScanSessionIdColumn) {
+  db.exec('ALTER TABLE videos ADD COLUMN scan_session_id TEXT');
+}
+
+db.exec('CREATE INDEX IF NOT EXISTS idx_videos_scan_session_id ON videos(scan_session_id)');
 
 function nowIso() {
   return new Date().toISOString();

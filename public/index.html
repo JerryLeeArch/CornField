@@ -118,6 +118,22 @@
       </form>
     </dialog>
 
+    <dialog id="deleteConfirmDialog" class="settings-dialog delete-confirm-dialog">
+      <form id="deleteConfirmForm" method="dialog">
+        <h2 id="deleteConfirmTitle">Delete Video?</h2>
+        <div id="deleteConfirmMessage" class="delete-confirm-copy"></div>
+        <div id="deleteConfirmDetails" class="delete-confirm-details"></div>
+        <div class="warning delete-confirm-warning">
+          This action cannot be undone.
+        </div>
+        <div class="dialog-actions delete-confirm-actions">
+          <button type="button" id="deleteConfirmCancelBtn">Cancel</button>
+          <button type="button" id="deleteConfirmMetadataBtn" class="warning-btn delete-confirm-metadata-btn">Delete Metadata Only</button>
+          <button type="button" id="deleteConfirmProceedBtn" class="danger-btn">Delete Video</button>
+        </div>
+      </form>
+    </dialog>
+
     <template id="libraryViewTemplate">
       <section class="library-toolbar">
         <div class="toolbar-grid">

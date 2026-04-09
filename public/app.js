@@ -25,6 +25,13 @@ const commentEditRatingEditor = document.getElementById('commentEditRatingEditor
 const commentEditRatingInput = document.getElementById('commentEditRatingInput');
 const commentEditRatingLabel = document.getElementById('commentEditRatingLabel');
 const commentEditCancelBtn = document.getElementById('commentEditCancelBtn');
+const deleteConfirmDialog = document.getElementById('deleteConfirmDialog');
+const deleteConfirmTitle = document.getElementById('deleteConfirmTitle');
+const deleteConfirmMessage = document.getElementById('deleteConfirmMessage');
+const deleteConfirmDetails = document.getElementById('deleteConfirmDetails');
+const deleteConfirmCancelBtn = document.getElementById('deleteConfirmCancelBtn');
+const deleteConfirmMetadataBtn = document.getElementById('deleteConfirmMetadataBtn');
+const deleteConfirmProceedBtn = document.getElementById('deleteConfirmProceedBtn');
 
 const savedVolume = Number(localStorage.getItem('playerVolume'));
 const savedMuted = localStorage.getItem('playerMuted');
@@ -74,6 +81,10 @@ const noteEditState = {
 const commentEditState = {
   commentId: null,
   videoId: null
+};
+
+const deleteConfirmState = {
+  resolve: null
 };
 
 const activeVideoView = {
@@ -169,6 +180,43 @@ function openCommentEditDialog({ comment, videoId }) {
 
   commentEditContentInput.focus();
   commentEditContentInput.setSelectionRange(commentEditContentInput.value.length, commentEditContentInput.value.length);
+}
+
+function settleDeleteConfirm(result) {
+  const resolve = deleteConfirmState.resolve;
+  deleteConfirmState.resolve = null;
+
+  if (deleteConfirmDialog.open) {
+    deleteConfirmDialog.close();
+  }
+
+  if (typeof resolve === 'function') {
+    resolve(result);
+  }
+}
+
+function confirmVideoDeletion({ videoId, displayTitle, fileName }) {
+  if (typeof deleteConfirmState.resolve === 'function') {
+    deleteConfirmState.resolve(false);
+    deleteConfirmState.resolve = null;
+  }
+
+  deleteConfirmTitle.textContent = 'Delete Video?';
+  deleteConfirmMessage.textContent =
+    'Delete Video removes the original file and all CornField metadata. Delete Metadata Only keeps the original file, removes all CornField data for this video, and Scan Library will import it again as a new video later.';
+  deleteConfirmDetails.innerHTML = `
+    <div><strong>ID:</strong> ${escapeHtml(videoId)}</div>
+    <div><strong>Display Title:</strong> ${escapeHtml(displayTitle || '-')}</div>
+    <div><strong>File Name:</strong> ${escapeHtml(fileName || '-')}</div>
+  `;
+
+  if (!deleteConfirmDialog.open) {
+    deleteConfirmDialog.showModal();
+  }
+
+  return new Promise((resolve) => {
+    deleteConfirmState.resolve = resolve;
+  });
 }
 
 function setHash(hash) {
@@ -535,12 +583,17 @@ async function getDatabaseSummary({ force = false } = {}) {
     return state.dbSummary.data;
   }
 
-  const data = await api('/api/database/summary');
-  state.dbSummary = {
-    data,
-    loadedAt: now
-  };
-  return data;
+  try {
+    const data = await api('/api/database/summary');
+    state.dbSummary = {
+      data,
+      loadedAt: Date.now()
+    };
+    return data;
+  } catch {
+    state.dbSummary = null;
+    return null;
+  }
 }
 
 function syncLibraryScanningIndicator() {
@@ -2431,20 +2484,25 @@ async function renderDatabaseView() {
     const totalVideos = Number(totals.totalVideos || 0);
     const thumbnailCoverage = totalVideos > 0 ? formatPercent(totals.thumbnailCount, totalVideos) : '0%';
     const previewCoverage = totalVideos > 0 ? formatPercent(totals.previewCount, totalVideos) : '0%';
+    const interactionCounts = {
+      views: Number(totals.totalViews || 0),
+      reviews: Number(totals.commentCount || 0),
+      markers: Number(totals.noteCount || 0),
+      tags: Number(totals.tagCount || 0),
+      starrings: Number(totals.starringCount || 0)
+    };
+    const totalInteractions = Object.values(interactionCounts).reduce((sum, value) => sum + value, 0);
 
     const rowsHtml = (data.items || [])
       .map(
         (item) => `
           <tr data-video-id="${item.id}">
             <td>${item.id}</td>
-            <td><input data-db-title value="${escapeHtml(item.displayTitle || '')}" /></td>
-            <td>${escapeHtml(item.fileName || '')}</td>
-            <td><input data-db-category value="${escapeHtml(item.category || '')}" /></td>
+            <td class="db-title-cell">${escapeHtml(item.displayTitle || '')}</td>
+            <td class="db-file-cell">${escapeHtml(item.fileName || '')}</td>
             <td>${escapeHtml(item.qualityBucket || 'unknown')}</td>
-            <td><input data-db-views type="number" min="0" value="${Number(item.viewCount || 0)}" /></td>
             <td>${formatDate(item.uploadDate || item.originalCreatedAt)}</td>
             <td class="db-actions">
-              <button data-db-save>Save</button>
               <button data-db-open>Open</button>
               <button class="danger-btn" data-db-delete>Delete</button>
             </td>
@@ -2481,9 +2539,8 @@ async function renderDatabaseView() {
       )
       .join('');
 
-    mainEl.innerHTML = `
-      <section class="section-panel">
-        <div class="panel-body">
+    const summaryHtml = summary
+      ? `
           <div class="db-header">
             <div>
               <h2 class="section-title">Video DB</h2>
@@ -2511,13 +2568,15 @@ async function renderDatabaseView() {
               </div>
             </article>
             <article class="db-summary-card">
-              <span class="db-summary-label">Metadata</span>
-              <strong>${formatNumber(totals.tagCount || 0)}</strong>
-              <div class="db-summary-value-sub">tags across ${formatNumber(totals.categoryCount || 0)} categories</div>
+              <span class="db-summary-label">Total Interactions</span>
+              <strong>${formatNumber(totalInteractions)}</strong>
+              <div class="db-summary-value-sub">CornField activity and metadata signals</div>
               <div class="db-summary-inline">
-                <span>${formatNumber(totals.starringCount || 0)} starrings</span>
-                <span>${formatNumber(totals.commentCount || 0)} comments</span>
-                <span>${formatNumber(totals.noteCount || 0)} notes</span>
+                <span>${formatNumber(interactionCounts.views)} views</span>
+                <span>${formatNumber(interactionCounts.reviews)} reviews</span>
+                <span>${formatNumber(interactionCounts.markers)} markers</span>
+                <span>${formatNumber(interactionCounts.tags)} tags</span>
+                <span>${formatNumber(interactionCounts.starrings)} starrings</span>
               </div>
             </article>
             <article class="db-summary-card">
@@ -2551,6 +2610,16 @@ async function renderDatabaseView() {
               </div>
             </section>
           </div>
+        `
+      : `
+          <h2 class="section-title">Video DB</h2>
+          <div class="muted" style="margin-top: 0.45rem;">Summary is temporarily unavailable, but the database table is still usable.</div>
+        `;
+
+    mainEl.innerHTML = `
+      <section class="section-panel">
+        <div class="panel-body">
+          ${summaryHtml}
           <div class="db-toolbar">
             <input id="dbSearchInput" type="search" placeholder="Search title, file, category, tag, starring..." value="${escapeHtml(state.dbFilters.q || '')}" />
             <button id="dbApplyBtn" class="primary">Search</button>
@@ -2562,17 +2631,15 @@ async function renderDatabaseView() {
               <thead>
                 <tr>
                   <th>ID</th>
-                  <th>Display Title</th>
-                  <th>File Name</th>
-                  <th>Category</th>
+                  <th class="db-title-cell">Display Title</th>
+                  <th class="db-file-cell">File Name</th>
                   <th>Quality</th>
-                  <th>Views</th>
                   <th>Date</th>
                   <th>Actions</th>
                 </tr>
               </thead>
               <tbody>
-                ${rowsHtml || '<tr><td colspan="8" class="muted">No videos found.</td></tr>'}
+                ${rowsHtml || '<tr><td colspan="6" class="muted">No videos found.</td></tr>'}
               </tbody>
             </table>
           </div>
@@ -2627,47 +2694,28 @@ async function renderDatabaseView() {
       });
     });
 
-    document.querySelectorAll('[data-db-save]').forEach((btn) => {
-      btn.addEventListener('click', async (event) => {
-        const tr = event.currentTarget.closest('tr');
-        const videoId = Number(tr?.dataset.videoId || 0);
-        const displayTitle = tr.querySelector('[data-db-title]')?.value?.trim() || '';
-        const category = tr.querySelector('[data-db-category]')?.value?.trim() || '';
-        const viewCount = Number(tr.querySelector('[data-db-views]')?.value || 0);
-
-        if (!videoId || !displayTitle) {
-          showToast('Display title is required.', true);
-          return;
-        }
-
-        try {
-          await api(`/api/videos/${videoId}/metadata`, {
-            method: 'PUT',
-            body: JSON.stringify({ displayTitle, category, viewCount })
-          });
-          invalidateDatabaseSummary();
-          showToast('Row updated');
-        } catch (error) {
-          showToast(error.message, true);
-        }
-      });
-    });
-
     document.querySelectorAll('[data-db-delete]').forEach((btn) => {
       btn.addEventListener('click', async (event) => {
         const tr = event.currentTarget.closest('tr');
         const videoId = Number(tr?.dataset.videoId || 0);
+        const displayTitle = tr?.querySelector('.db-title-cell')?.textContent?.trim() || '';
+        const fileName = tr?.querySelector('.db-file-cell')?.textContent?.trim() || '';
         if (!videoId) return;
 
-        if (!confirm('Delete this video file and DB row?')) return;
+        const deleteMode = await confirmVideoDeletion({ videoId, displayTitle, fileName });
+        if (!deleteMode) return;
 
         try {
           await api(`/api/videos/${videoId}`, {
             method: 'DELETE',
-            body: JSON.stringify({ deleteFile: true })
+            body: JSON.stringify({ deleteFile: deleteMode === 'video' })
           });
           invalidateDatabaseSummary();
-          showToast('Video deleted');
+          showToast(
+            deleteMode === 'video'
+              ? 'Video deleted'
+              : 'Metadata deleted. Scan Library to import this file again as a new video.'
+          );
           renderRoute();
         } catch (error) {
           showToast(error.message, true);
@@ -2869,6 +2917,26 @@ function setupGlobalEvents() {
 
   commentEditCancelBtn.addEventListener('click', () => {
     closeCommentEditDialog();
+  });
+
+  deleteConfirmCancelBtn.addEventListener('click', () => {
+    settleDeleteConfirm(false);
+  });
+
+  deleteConfirmMetadataBtn.addEventListener('click', () => {
+    settleDeleteConfirm('metadata');
+  });
+
+  deleteConfirmProceedBtn.addEventListener('click', () => {
+    settleDeleteConfirm('video');
+  });
+
+  deleteConfirmDialog.addEventListener('close', () => {
+    if (typeof deleteConfirmState.resolve === 'function') {
+      const resolve = deleteConfirmState.resolve;
+      deleteConfirmState.resolve = null;
+      resolve(false);
+    }
   });
 
   commentEditDialog.addEventListener('close', () => {

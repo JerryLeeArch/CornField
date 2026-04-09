@@ -20,8 +20,13 @@ import {
   touchVideo,
   isoNow
 } from './db.js';
-import { previewLibraryScan, scanLibrary } from './media-indexer.js';
-import { deleteTimelinePreviewCache, ensureTimelinePreviewManifest, timelinePreviewRoot } from './timeline-previews.js';
+import { cleanupInterruptedLibraryScanState, previewLibraryScan, scanLibrary } from './media-indexer.js';
+import {
+  cleanupStaleTimelinePreviewTemps,
+  deleteTimelinePreviewCache,
+  ensureTimelinePreviewManifest,
+  timelinePreviewRoot
+} from './timeline-previews.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -105,6 +110,32 @@ function sanitizeFileName(fileName) {
   if (!fileName) return null;
   if (fileName.includes('/') || fileName.includes('\\')) return null;
   return fileName.trim();
+}
+
+async function deleteManagedThumbnail(thumbnailPath) {
+  const normalized = String(thumbnailPath || '').trim();
+  if (!normalized.startsWith('/thumbnails/')) {
+    return;
+  }
+
+  const relativeName = normalized.slice('/thumbnails/'.length).split('?')[0];
+  const safeFileName = sanitizeFileName(decodePathParam(relativeName));
+  if (!safeFileName) {
+    return;
+  }
+
+  const absPath = path.join(thumbnailRoot, safeFileName);
+  if (!isPathInsideRoot(thumbnailRoot, absPath)) {
+    return;
+  }
+
+  try {
+    await fsp.unlink(absPath);
+  } catch (error) {
+    if (error?.code !== 'ENOENT') {
+      throw error;
+    }
+  }
 }
 
 function decodePathParam(input) {
@@ -1233,7 +1264,7 @@ app.delete('/api/videos/:id', async (request, reply) => {
     return reply.code(400).send({ error: 'Invalid video id' });
   }
 
-  const existing = db.prepare('SELECT id, relative_path FROM videos WHERE id = ?').get(id);
+  const existing = db.prepare('SELECT id, relative_path, thumbnail_path FROM videos WHERE id = ?').get(id);
   if (!existing) {
     return reply.code(404).send({ error: 'Video not found' });
   }
@@ -1264,6 +1295,16 @@ app.delete('/api/videos/:id', async (request, reply) => {
     }
   }
 
+  try {
+    await deleteManagedThumbnail(existing.thumbnail_path);
+  } catch (error) {
+    return reply.code(500).send({ error: `Failed to delete thumbnail: ${error.message}` });
+  }
+
+  db.prepare('DELETE FROM comments WHERE video_id = ?').run(id);
+  db.prepare('DELETE FROM timeline_notes WHERE video_id = ?').run(id);
+  db.prepare('DELETE FROM video_tags WHERE video_id = ?').run(id);
+  db.prepare('DELETE FROM video_starrings WHERE video_id = ?').run(id);
   db.prepare('DELETE FROM videos WHERE id = ?').run(id);
   db.prepare('DELETE FROM tags WHERE id NOT IN (SELECT DISTINCT tag_id FROM video_tags)').run();
   db.prepare('DELETE FROM starrings WHERE id NOT IN (SELECT DISTINCT starring_id FROM video_starrings)').run();
@@ -1737,6 +1778,8 @@ const host = process.env.HOST || '127.0.0.1';
 async function start() {
   try {
     await configureWatcher();
+    await cleanupStaleTimelinePreviewTemps();
+    cleanupInterruptedLibraryScanState();
     await app.listen({ port, host });
     console.log(`Video player running at http://${host}:${port}`);
   } catch (error) {
