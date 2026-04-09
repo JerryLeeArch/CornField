@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -25,6 +26,7 @@ const VIDEO_EXTENSIONS = new Set([
   '.ts',
   '.m2ts'
 ]);
+const FINGERPRINT_SAMPLE_BYTES = 1024 * 1024;
 
 function toPosixRelative(relativePath) {
   return relativePath.split(path.sep).join('/');
@@ -71,6 +73,49 @@ async function walkVideoFiles(rootDir, currentDir = rootDir, acc = []) {
   }
 
   return acc;
+}
+
+function normalizeFileMtime(fileStat) {
+  const mtime = fileStat?.mtime;
+  if (mtime?.toISOString) {
+    return mtime.toISOString();
+  }
+
+  const mtimeMs = Number(fileStat?.mtimeMs || 0);
+  return mtimeMs > 0 ? new Date(mtimeMs).toISOString() : null;
+}
+
+async function readFileSample(fileHandle, length, position) {
+  const safeLength = Math.max(0, Math.floor(Number(length) || 0));
+  if (safeLength <= 0) {
+    return Buffer.alloc(0);
+  }
+
+  const buffer = Buffer.allocUnsafe(safeLength);
+  const { bytesRead } = await fileHandle.read(buffer, 0, safeLength, position);
+  return buffer.subarray(0, bytesRead);
+}
+
+async function buildFileFingerprint(absPath, fileStat) {
+  const fileSize = Math.max(0, Math.floor(Number(fileStat?.size || 0)));
+  const hash = createHash('sha1');
+  hash.update(String(fileSize));
+  hash.update(':');
+
+  const fileHandle = await fs.open(absPath, 'r');
+
+  try {
+    if (fileSize <= FINGERPRINT_SAMPLE_BYTES * 2) {
+      hash.update(await readFileSample(fileHandle, fileSize, 0));
+    } else {
+      hash.update(await readFileSample(fileHandle, FINGERPRINT_SAMPLE_BYTES, 0));
+      hash.update(await readFileSample(fileHandle, FINGERPRINT_SAMPLE_BYTES, fileSize - FINGERPRINT_SAMPLE_BYTES));
+    }
+  } finally {
+    await fileHandle.close();
+  }
+
+  return hash.digest('hex').slice(0, 24);
 }
 
 async function probeVideo(absPath) {
@@ -170,20 +215,146 @@ async function resolveQuickLookPath() {
   }
 }
 
-const selectRelativePathsStmt = db.prepare('SELECT relative_path FROM videos');
-const selectVideoByRelativePathStmt = db.prepare('SELECT id, thumbnail_path AS thumbnailPath FROM videos WHERE relative_path = ?');
+const selectActiveRelativePathsStmt = db.prepare('SELECT relative_path FROM videos WHERE is_missing = 0');
+const selectActiveVideoByRelativePathStmt = db.prepare(`
+  SELECT
+    id,
+    relative_path AS relativePath,
+    thumbnail_path AS thumbnailPath,
+    content_fingerprint AS contentFingerprint,
+    file_size AS fileSize,
+    file_mtime AS fileMtime
+  FROM videos
+  WHERE relative_path = ?
+    AND is_missing = 0
+  ORDER BY id DESC
+  LIMIT 1
+`);
+const selectUnmatchedVideosByFingerprintStmt = db.prepare(`
+  SELECT
+    id,
+    relative_path AS relativePath,
+    is_missing AS isMissing,
+    thumbnail_path AS thumbnailPath,
+    content_fingerprint AS contentFingerprint,
+    file_size AS fileSize,
+    file_mtime AS fileMtime
+  FROM videos
+  WHERE scan_session_id IS NULL
+    AND content_fingerprint = ?
+  ORDER BY is_missing DESC, updated_at DESC, id DESC
+`);
+const selectUnmatchedVideosByFileSignatureStmt = db.prepare(`
+  SELECT
+    id,
+    relative_path AS relativePath,
+    is_missing AS isMissing,
+    thumbnail_path AS thumbnailPath,
+    content_fingerprint AS contentFingerprint,
+    file_size AS fileSize,
+    file_mtime AS fileMtime
+  FROM videos
+  WHERE scan_session_id IS NULL
+    AND file_size = ?
+    AND file_mtime = ?
+  ORDER BY is_missing DESC, updated_at DESC, id DESC
+`);
 const selectThumbnailMissingRelativePathsStmt = db.prepare(`
   SELECT relative_path
   FROM videos
-  WHERE thumbnail_path IS NULL OR TRIM(thumbnail_path) = ''
+  WHERE is_missing = 0
+    AND (thumbnail_path IS NULL OR TRIM(thumbnail_path) = '')
 `);
 const updateVideoThumbnailStmt = db.prepare('UPDATE videos SET thumbnail_path = ?, thumbnail_time = ?, updated_at = ? WHERE id = ?');
 const clearInterruptedScanSessionsStmt = db.prepare('UPDATE videos SET scan_session_id = NULL WHERE scan_session_id IS NOT NULL');
+const markVideoMissingStmt = db.prepare(`
+  UPDATE videos
+  SET
+    is_missing = 1,
+    scan_session_id = NULL,
+    updated_at = ?
+  WHERE id = ?
+`);
+const updateMatchedVideoStmt = db.prepare(`
+  UPDATE videos
+  SET
+    relative_path = @relativePath,
+    file_name = @fileName,
+    original_created_at = @originalCreatedAt,
+    duration = CASE WHEN @duration > 0 THEN @duration ELSE duration END,
+    width = CASE WHEN @width > 0 THEN @width ELSE width END,
+    height = CASE WHEN @height > 0 THEN @height ELSE height END,
+    quality_bucket = CASE WHEN @height > 0 THEN @qualityBucket ELSE quality_bucket END,
+    scan_session_id = @scanSessionId,
+    is_missing = 0,
+    file_size = @fileSize,
+    file_mtime = @fileMtime,
+    content_fingerprint = @contentFingerprint,
+    updated_at = @now
+  WHERE id = @id
+`);
+const insertVideoStmt = db.prepare(`
+  INSERT INTO videos (
+    relative_path,
+    file_name,
+    display_title,
+    original_created_at,
+    duration,
+    width,
+    height,
+    quality_bucket,
+    scan_session_id,
+    last_scanned_at,
+    is_missing,
+    file_size,
+    file_mtime,
+    content_fingerprint,
+    created_at,
+    updated_at
+  )
+  VALUES (
+    @relativePath,
+    @fileName,
+    @displayTitle,
+    @originalCreatedAt,
+    @duration,
+    @width,
+    @height,
+    @qualityBucket,
+    @scanSessionId,
+    NULL,
+    0,
+    @fileSize,
+    @fileMtime,
+    @contentFingerprint,
+    @now,
+    @now
+  )
+`);
 const finalizeScanStmt = db.transaction((scanSessionId, completedAt) => {
-  db.prepare('DELETE FROM videos WHERE scan_session_id IS NULL OR scan_session_id <> ?').run(scanSessionId);
-  db.prepare('UPDATE videos SET last_scanned_at = ?, scan_session_id = NULL WHERE scan_session_id = ?').run(completedAt, scanSessionId);
+  const missingResult = db.prepare(`
+    UPDATE videos
+    SET
+      is_missing = 1,
+      scan_session_id = NULL,
+      updated_at = CASE WHEN is_missing = 0 THEN ? ELSE updated_at END
+    WHERE scan_session_id IS NULL
+      AND is_missing = 0
+  `).run(completedAt);
+  const activeResult = db.prepare(`
+    UPDATE videos
+    SET
+      is_missing = 0,
+      last_scanned_at = ?,
+      scan_session_id = NULL
+    WHERE scan_session_id = ?
+  `).run(completedAt, scanSessionId);
   db.prepare('DELETE FROM tags WHERE id NOT IN (SELECT DISTINCT tag_id FROM video_tags)').run();
   db.prepare('DELETE FROM starrings WHERE id NOT IN (SELECT DISTINCT starring_id FROM video_starrings)').run();
+  return {
+    missingCount: missingResult.changes,
+    activeCount: activeResult.changes
+  };
 });
 
 function createScanSessionId(startedAt) {
@@ -198,22 +369,23 @@ function logScanInfo(message, details = '') {
 }
 
 function calculateScanDiff(files) {
-  const existingRows = selectRelativePathsStmt.all();
+  const existingRows = selectActiveRelativePathsStmt.all();
   const existingSet = new Set(existingRows.map((row) => row.relative_path));
   const currentSet = new Set(files.map((file) => file.relative));
   const addedFiles = files.filter((file) => !existingSet.has(file.relative));
-  let deletedCount = 0;
+  let missingCount = 0;
 
   for (const row of existingRows) {
     if (!currentSet.has(row.relative_path)) {
-      deletedCount += 1;
+      missingCount += 1;
     }
   }
 
   return {
     addedFiles,
     addedCount: addedFiles.length,
-    deletedCount
+    missingCount,
+    deletedCount: missingCount
   };
 }
 
@@ -314,48 +486,108 @@ async function captureAutoThumbnail(absPath, videoId, durationSec) {
   return captureAutoThumbnailWithQuickLook(absPath, videoId);
 }
 
-const upsertVideoStmt = db.prepare(`
-INSERT INTO videos (
-  relative_path,
-  file_name,
-  display_title,
-  original_created_at,
-  duration,
-  width,
-  height,
-  quality_bucket,
-  scan_session_id,
-  last_scanned_at,
-  is_missing,
-  created_at,
-  updated_at
-)
-VALUES (
-  @relativePath,
-  @fileName,
-  @displayTitle,
-  @originalCreatedAt,
-  @duration,
-  @width,
-  @height,
-  @qualityBucket,
-  @scanSessionId,
-  NULL,
-  0,
-  @now,
-  @now
-)
-ON CONFLICT(relative_path) DO UPDATE SET
-  file_name = excluded.file_name,
-  original_created_at = excluded.original_created_at,
-  duration = CASE WHEN excluded.duration > 0 THEN excluded.duration ELSE videos.duration END,
-  width = CASE WHEN excluded.width > 0 THEN excluded.width ELSE videos.width END,
-  height = CASE WHEN excluded.height > 0 THEN excluded.height ELSE videos.height END,
-  quality_bucket = CASE WHEN excluded.height > 0 THEN excluded.quality_bucket ELSE videos.quality_bucket END,
-  scan_session_id = excluded.scan_session_id,
-  is_missing = 0,
-  updated_at = excluded.updated_at
-`);
+function hasStoredIdentity(row) {
+  return Boolean(String(row?.contentFingerprint || '').trim()) || (
+    Number(row?.fileSize || 0) > 0 && Boolean(String(row?.fileMtime || '').trim())
+  );
+}
+
+function isSameFileIdentity(row, payload) {
+  const existingFingerprint = String(row?.contentFingerprint || '').trim();
+  const nextFingerprint = String(payload?.contentFingerprint || '').trim();
+
+  if (existingFingerprint && nextFingerprint) {
+    return existingFingerprint === nextFingerprint;
+  }
+
+  if (!hasStoredIdentity(row)) {
+    return true;
+  }
+
+  return (
+    Number(row?.fileSize || 0) === Number(payload?.fileSize || 0) &&
+    String(row?.fileMtime || '').trim() === String(payload?.fileMtime || '').trim()
+  );
+}
+
+function findSingleUnmatchedCandidate(payload, excludedIds = []) {
+  const excludeSet = new Set(
+    excludedIds
+      .map((value) => Number(value))
+      .filter((value) => Number.isInteger(value) && value > 0)
+  );
+
+  let candidates = [];
+  const fingerprint = String(payload?.contentFingerprint || '').trim();
+
+  if (fingerprint) {
+    candidates = selectUnmatchedVideosByFingerprintStmt
+      .all(fingerprint)
+      .filter((row) => !excludeSet.has(Number(row.id)));
+  }
+
+  if (candidates.length === 0 && Number(payload?.fileSize || 0) > 0 && String(payload?.fileMtime || '').trim()) {
+    candidates = selectUnmatchedVideosByFileSignatureStmt
+      .all(Number(payload.fileSize), String(payload.fileMtime).trim())
+      .filter((row) => !excludeSet.has(Number(row.id)));
+  }
+
+  return candidates.length === 1 ? candidates[0] : null;
+}
+
+const syncScannedVideoStmt = db.transaction((payload) => {
+  const activeByPath = selectActiveVideoByRelativePathStmt.get(payload.relativePath);
+
+  if (activeByPath && isSameFileIdentity(activeByPath, payload)) {
+    updateMatchedVideoStmt.run({
+      ...payload,
+      id: activeByPath.id
+    });
+
+    return {
+      videoId: Number(activeByPath.id),
+      thumbnailPath: activeByPath.thumbnailPath || null,
+      addedCount: 0,
+      missingCount: 0
+    };
+  }
+
+  const candidate = findSingleUnmatchedCandidate(payload, activeByPath ? [activeByPath.id] : []);
+  let missingCount = 0;
+
+  if (candidate) {
+    if (activeByPath && Number(activeByPath.id) !== Number(candidate.id)) {
+      markVideoMissingStmt.run(payload.now, activeByPath.id);
+      missingCount += 1;
+    }
+
+    updateMatchedVideoStmt.run({
+      ...payload,
+      id: candidate.id
+    });
+
+    return {
+      videoId: Number(candidate.id),
+      thumbnailPath: candidate.thumbnailPath || null,
+      addedCount: 0,
+      missingCount
+    };
+  }
+
+  if (activeByPath) {
+    markVideoMissingStmt.run(payload.now, activeByPath.id);
+    missingCount += 1;
+  }
+
+  const insertResult = insertVideoStmt.run(payload);
+
+  return {
+    videoId: Number(insertResult.lastInsertRowid),
+    thumbnailPath: null,
+    addedCount: 1,
+    missingCount
+  };
+});
 
 export function cleanupInterruptedLibraryScanState() {
   const result = clearInterruptedScanSessionsStmt.run();
@@ -376,6 +608,7 @@ export async function previewLibraryScan(libraryRoot) {
   return {
     scannedCount: files.length,
     addedCount: diff.addedCount,
+    missingCount: diff.missingCount,
     deletedCount: diff.deletedCount,
     missingThumbnailCount,
     scannedAt: isoNow()
@@ -394,8 +627,9 @@ export async function scanLibrary(libraryRoot, options = {}) {
   const startAt = isoNow();
   const scanSessionId = createScanSessionId(startAt);
   const files = await walkVideoFiles(root);
-  const diff = calculateScanDiff(files);
   let autoThumbnailsCreated = 0;
+  let addedCount = 0;
+  let missingCount = 0;
   logScanInfo('started', `session=${scanSessionId} files=${files.length}`);
   onProgress?.({
     phase: 'processing',
@@ -408,8 +642,10 @@ export async function scanLibrary(libraryRoot, options = {}) {
     const probed = await probeVideo(file.absPath);
     const displayTitle = path.parse(file.fileName).name;
     const now = isoNow();
+    const contentFingerprint = await buildFileFingerprint(file.absPath, fileStat).catch(() => null);
+    const fileMtime = normalizeFileMtime(fileStat);
 
-    upsertVideoStmt.run({
+    const scanResult = syncScannedVideoStmt({
       relativePath: file.relative,
       fileName: file.fileName,
       displayTitle,
@@ -419,14 +655,18 @@ export async function scanLibrary(libraryRoot, options = {}) {
       height: probed.height,
       qualityBucket: probed.qualityBucket,
       scanSessionId,
+      fileSize: Math.max(0, Math.floor(Number(fileStat.size || 0))),
+      fileMtime,
+      contentFingerprint,
       now
     });
+    addedCount += Number(scanResult.addedCount || 0);
+    missingCount += Number(scanResult.missingCount || 0);
 
-    const row = selectVideoByRelativePathStmt.get(file.relative);
-    if (row?.id && !row.thumbnailPath) {
-      const captured = await captureAutoThumbnail(file.absPath, row.id, probed.duration);
+    if (scanResult?.videoId && !scanResult.thumbnailPath) {
+      const captured = await captureAutoThumbnail(file.absPath, scanResult.videoId, probed.duration);
       if (captured) {
-        updateVideoThumbnailStmt.run(captured.thumbnailPath, captured.thumbnailTime, isoNow(), row.id);
+        updateVideoThumbnailStmt.run(captured.thumbnailPath, captured.thumbnailTime, isoNow(), scanResult.videoId);
         autoThumbnailsCreated += 1;
       }
     }
@@ -445,13 +685,15 @@ export async function scanLibrary(libraryRoot, options = {}) {
     totalCount: files.length
   });
 
-  finalizeScanStmt(scanSessionId, startAt);
+  const finalizeResult = finalizeScanStmt(scanSessionId, startAt);
+  missingCount += Number(finalizeResult?.missingCount || 0);
   logScanInfo('finished', `session=${scanSessionId} files=${files.length} autoThumbnailsCreated=${autoThumbnailsCreated}`);
 
   return {
     scannedCount: files.length,
-    addedCount: diff.addedCount,
-    deletedCount: diff.deletedCount,
+    addedCount,
+    missingCount,
+    deletedCount: missingCount,
     autoThumbnailsCreated,
     scannedAt: startAt
   };

@@ -554,8 +554,8 @@ function bindMarkerTimeInput(input, getFallbackSeconds) {
   });
 }
 
-function firstAvailableDate(video) {
-  return video.uploadDate || video.originalCreatedAt;
+function getAddedDate(video) {
+  return video.createdAt;
 }
 
 function showToast(message, isError = false) {
@@ -728,11 +728,11 @@ function hideScanPreview() {
   scanPreviewBox.hidden = true;
 }
 
-function showScanPreview(addedCount, deletedCount, missingThumbnailCount, rootPath) {
+function showScanPreview(addedCount, missingCount, missingThumbnailCount, rootPath) {
   state.pendingScanRoot = rootPath;
   const parts = [
-    `${addedCount} videos added`,
-    `${deletedCount} videos deleted`
+    `Est. ${addedCount} videos added`,
+    `Est. ${missingCount} videos marked missing`
   ];
 
   if (missingThumbnailCount > 0) {
@@ -1034,7 +1034,7 @@ function createVideoCard(video) {
         <span>${formatDuration(Number(video.duration))}</span>
       </div>
       <div class="meta-row">
-        <span>${formatDate(firstAvailableDate(video))}</span>
+        <span>${formatDate(getAddedDate(video))}</span>
         <span>Views ${Number(video.viewCount || 0)}</span>
       </div>
       ${getCardRatingRowHtml(video, { hideWhenEmpty: true })}
@@ -1125,8 +1125,8 @@ function getLibraryToolbarHtml(options = {}) {
         </select>
         <select id="sortSelect">
           <option value="random">Random</option>
-          <option value="upload_desc">Upload Date (Newest)</option>
-          <option value="upload_asc">Upload Date (Oldest)</option>
+          <option value="upload_desc">Date Added (Newest)</option>
+          <option value="upload_asc">Date Added (Oldest)</option>
           <option value="views_desc">Views (High to Low)</option>
           <option value="recent_scan">Recently Scanned</option>
         </select>
@@ -1407,7 +1407,7 @@ async function renderVideoView(videoId) {
           <div class="meta-row" style="margin-top: .55rem;">
             <span>${escapeHtml(video.qualityBucket || 'unknown')} (${video.width || 0}x${video.height || 0})</span>
             <span>Views ${video.viewCount || 0}</span>
-            <span>Upload ${formatDate(firstAvailableDate(video))}</span>
+            <span>Added ${formatDate(getAddedDate(video))}</span>
           </div>
           <div class="meta-row rating-row" style="margin-top: .35rem;">
             <span class="${videoRatingCount ? 'rating-summary' : 'muted'}">${videoRatingText}</span>
@@ -1453,7 +1453,7 @@ async function renderVideoView(videoId) {
               <label>Starring (comma separated) <input id="metaStarrings" value="${escapeHtml((video.starrings || []).join(', '))}" /></label>
               <label>View Count <input id="metaViewCount" type="number" min="0" value="${Number(video.viewCount || 0)}" /></label>
               <label>Display Title <input id="metaTitle" value="${escapeHtml(video.displayTitle || '')}" required /></label>
-              <label>Upload Date <input id="metaUploadDate" type="date" value="${escapeHtml((video.uploadDate || '').slice(0, 10))}" /></label>
+              <label>Date Added <input id="metaCreatedAtDate" type="date" value="${escapeHtml((video.createdAt || '').slice(0, 10))}" /></label>
               <button type="submit" class="primary">Save Metadata</button>
             </form>
 
@@ -2120,7 +2120,7 @@ async function renderVideoView(videoId) {
           method: 'PUT',
           body: JSON.stringify({
             displayTitle: document.getElementById('metaTitle').value.trim(),
-            uploadDate: document.getElementById('metaUploadDate').value,
+            createdAtDate: document.getElementById('metaCreatedAtDate').value,
             viewCount: Number(document.getElementById('metaViewCount').value || 0),
             tags: document.getElementById('metaTags').value
               .split(',')
@@ -2501,7 +2501,7 @@ async function renderDatabaseView() {
             <td class="db-title-cell">${escapeHtml(item.displayTitle || '')}</td>
             <td class="db-file-cell">${escapeHtml(item.fileName || '')}</td>
             <td>${escapeHtml(item.qualityBucket || 'unknown')}</td>
-            <td>${formatDate(item.uploadDate || item.originalCreatedAt)}</td>
+            <td>${formatDate(item.createdAt)}</td>
             <td class="db-actions">
               <button data-db-open>Open</button>
               <button class="danger-btn" data-db-delete>Delete</button>
@@ -2634,7 +2634,7 @@ async function renderDatabaseView() {
                   <th class="db-title-cell">Display Title</th>
                   <th class="db-file-cell">File Name</th>
                   <th>Quality</th>
-                  <th>Date</th>
+                  <th>Date Added</th>
                   <th>Actions</th>
                 </tr>
               </thead>
@@ -3003,7 +3003,7 @@ function setupGlobalEvents() {
       hideScanPreview();
       const summaryParts = [
         `${Number(scanResult.addedCount || 0)} added`,
-        `${Number(scanResult.deletedCount || 0)} deleted`
+        `${Number(scanResult.missingCount ?? scanResult.deletedCount ?? 0)} marked missing`
       ];
       if (Number(scanResult.autoThumbnailsCreated || 0) > 0) {
         summaryParts.push(`${Number(scanResult.autoThumbnailsCreated || 0)} thumbnails auto-assigned`);
@@ -3043,16 +3043,16 @@ function setupGlobalEvents() {
       });
 
       const addedCount = Number(preview.addedCount || 0);
-      const deletedCount = Number(preview.deletedCount || 0);
+      const missingCount = Number(preview.missingCount ?? preview.deletedCount ?? 0);
       const missingThumbnailCount = Number(preview.missingThumbnailCount || 0);
 
-      if (addedCount === 0 && deletedCount === 0 && missingThumbnailCount === 0) {
+      if (addedCount === 0 && missingCount === 0 && missingThumbnailCount === 0) {
         hideScanPreview();
         showToast('No library or thumbnail changes detected');
         return;
       }
 
-      showScanPreview(addedCount, deletedCount, missingThumbnailCount, root);
+      showScanPreview(addedCount, missingCount, missingThumbnailCount, root);
     } catch (error) {
       showToast(error.message, true);
     } finally {
