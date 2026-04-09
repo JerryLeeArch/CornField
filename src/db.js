@@ -15,11 +15,12 @@ if (!fs.existsSync(dataDir)) {
 const dbPath = path.join(dataDir, 'videoplayer.db');
 export const db = new Database(dbPath);
 db.pragma('journal_mode = WAL');
+db.pragma('foreign_keys = ON');
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS videos (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  relative_path TEXT NOT NULL UNIQUE,
+  relative_path TEXT NOT NULL,
   file_name TEXT NOT NULL,
   display_title TEXT NOT NULL,
   description TEXT NOT NULL DEFAULT '',
@@ -29,21 +30,19 @@ CREATE TABLE IF NOT EXISTS videos (
   width INTEGER NOT NULL DEFAULT 0,
   height INTEGER NOT NULL DEFAULT 0,
   quality_bucket TEXT NOT NULL DEFAULT 'unknown',
+  scan_session_id TEXT,
   category TEXT NOT NULL DEFAULT '',
   view_count INTEGER NOT NULL DEFAULT 0,
   thumbnail_path TEXT,
   thumbnail_time REAL,
   is_missing INTEGER NOT NULL DEFAULT 0,
   last_scanned_at TEXT,
+  file_size INTEGER NOT NULL DEFAULT 0,
+  file_mtime TEXT,
+  content_fingerprint TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
-
-CREATE INDEX IF NOT EXISTS idx_videos_search ON videos(display_title, file_name, category);
-CREATE INDEX IF NOT EXISTS idx_videos_height ON videos(height);
-CREATE INDEX IF NOT EXISTS idx_videos_upload_date ON videos(upload_date);
-CREATE INDEX IF NOT EXISTS idx_videos_view_count ON videos(view_count);
-CREATE INDEX IF NOT EXISTS idx_videos_is_missing ON videos(is_missing);
 
 CREATE TABLE IF NOT EXISTS tags (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -96,6 +95,171 @@ CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+`);
+
+function getVideoColumns() {
+  return db.prepare('PRAGMA table_info(videos)').all();
+}
+
+function getVideosTableSql() {
+  const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'videos'").get();
+  return String(row?.sql || '');
+}
+
+function ensureVideoIndexes() {
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_videos_active_relative_path ON videos(relative_path) WHERE is_missing = 0');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_videos_search ON videos(display_title, file_name, category)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_videos_height ON videos(height)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_videos_upload_date ON videos(upload_date)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_videos_view_count ON videos(view_count)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_videos_is_missing ON videos(is_missing)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_videos_scan_session_id ON videos(scan_session_id)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_videos_fingerprint_missing ON videos(content_fingerprint, is_missing)');
+}
+
+function buildLegacyVideoSelect(columns) {
+  const hasColumn = (name) => columns.some((column) => column.name === name);
+  const pick = (name, fallbackSql) => (hasColumn(name) ? name : `${fallbackSql} AS ${name}`);
+
+  return [
+    pick('id', 'NULL'),
+    pick('relative_path', "''"),
+    pick('file_name', "''"),
+    pick('display_title', "''"),
+    pick('description', "''"),
+    pick('upload_date', 'NULL'),
+    pick('original_created_at', 'NULL'),
+    pick('duration', '0'),
+    pick('width', '0'),
+    pick('height', '0'),
+    pick('quality_bucket', "'unknown'"),
+    pick('scan_session_id', 'NULL'),
+    pick('category', "''"),
+    pick('view_count', '0'),
+    pick('thumbnail_path', 'NULL'),
+    pick('thumbnail_time', 'NULL'),
+    pick('is_missing', '0'),
+    pick('last_scanned_at', 'NULL'),
+    pick('file_size', '0'),
+    pick('file_mtime', 'NULL'),
+    pick('content_fingerprint', 'NULL'),
+    pick('created_at', 'CURRENT_TIMESTAMP'),
+    pick('updated_at', 'CURRENT_TIMESTAMP')
+  ].join(',\n      ');
+}
+
+function rebuildVideosTable(columns) {
+  const previousForeignKeys = Number(db.pragma('foreign_keys', { simple: true }) || 0);
+  const legacySelectSql = buildLegacyVideoSelect(columns);
+
+  db.pragma('foreign_keys = OFF');
+
+  try {
+    db.exec('BEGIN');
+    db.exec(`
+      CREATE TABLE videos_rebuild (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        relative_path TEXT NOT NULL,
+        file_name TEXT NOT NULL,
+        display_title TEXT NOT NULL,
+        description TEXT NOT NULL DEFAULT '',
+        upload_date TEXT,
+        original_created_at TEXT,
+        duration REAL NOT NULL DEFAULT 0,
+        width INTEGER NOT NULL DEFAULT 0,
+        height INTEGER NOT NULL DEFAULT 0,
+        quality_bucket TEXT NOT NULL DEFAULT 'unknown',
+        scan_session_id TEXT,
+        category TEXT NOT NULL DEFAULT '',
+        view_count INTEGER NOT NULL DEFAULT 0,
+        thumbnail_path TEXT,
+        thumbnail_time REAL,
+        is_missing INTEGER NOT NULL DEFAULT 0,
+        last_scanned_at TEXT,
+        file_size INTEGER NOT NULL DEFAULT 0,
+        file_mtime TEXT,
+        content_fingerprint TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )
+    `);
+    db.exec(`
+      INSERT INTO videos_rebuild (
+        id,
+        relative_path,
+        file_name,
+        display_title,
+        description,
+        upload_date,
+        original_created_at,
+        duration,
+        width,
+        height,
+        quality_bucket,
+        scan_session_id,
+        category,
+        view_count,
+        thumbnail_path,
+        thumbnail_time,
+        is_missing,
+        last_scanned_at,
+        file_size,
+        file_mtime,
+        content_fingerprint,
+        created_at,
+        updated_at
+      )
+      SELECT
+        ${legacySelectSql}
+      FROM videos
+    `);
+    db.exec('DROP TABLE videos');
+    db.exec('ALTER TABLE videos_rebuild RENAME TO videos');
+    db.exec('COMMIT');
+  } catch (error) {
+    try {
+      db.exec('ROLLBACK');
+    } catch {
+      // ignore rollback failure
+    }
+    throw error;
+  } finally {
+    db.pragma(`foreign_keys = ${previousForeignKeys ? 'ON' : 'OFF'}`);
+  }
+}
+
+function ensureVideosTableSchema() {
+  const videoColumns = getVideoColumns();
+  const tableSql = getVideosTableSql();
+  const hasColumn = (name) => videoColumns.some((column) => column.name === name);
+  const needsRebuild =
+    /relative_path\s+TEXT\s+NOT\s+NULL\s+UNIQUE/i.test(tableSql) ||
+    !hasColumn('scan_session_id') ||
+    !hasColumn('file_size') ||
+    !hasColumn('file_mtime') ||
+    !hasColumn('content_fingerprint');
+
+  if (needsRebuild) {
+    rebuildVideosTable(videoColumns);
+  }
+
+  ensureVideoIndexes();
+}
+
+ensureVideosTableSchema();
+db.exec(`
+  UPDATE videos
+  SET created_at = CASE
+    WHEN length(TRIM(created_at)) > 10 THEN TRIM(upload_date) || substr(TRIM(created_at), 11)
+    ELSE TRIM(upload_date) || 'T00:00:00.000Z'
+  END
+  WHERE upload_date IS NOT NULL
+    AND TRIM(upload_date) <> ''
+    AND (
+      created_at IS NULL
+      OR TRIM(created_at) = ''
+      OR substr(TRIM(created_at), 1, 10) <> TRIM(upload_date)
+    )
 `);
 
 function nowIso() {

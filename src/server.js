@@ -20,8 +20,13 @@ import {
   touchVideo,
   isoNow
 } from './db.js';
-import { previewLibraryScan, scanLibrary } from './media-indexer.js';
-import { deleteTimelinePreviewCache, ensureTimelinePreviewManifest, timelinePreviewRoot } from './timeline-previews.js';
+import { cleanupInterruptedLibraryScanState, previewLibraryScan, scanLibrary } from './media-indexer.js';
+import {
+  cleanupStaleTimelinePreviewTemps,
+  deleteTimelinePreviewCache,
+  ensureTimelinePreviewManifest,
+  timelinePreviewRoot
+} from './timeline-previews.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -70,6 +75,20 @@ function parseCsv(value) {
     .filter(Boolean);
 }
 
+function mergeDateInputIntoCreatedAt(existingCreatedAt, rawDate) {
+  const nextDate = String(rawDate || '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(nextDate)) {
+    return null;
+  }
+
+  const existing = String(existingCreatedAt || '').trim();
+  if (existing.length > 10) {
+    return `${nextDate}${existing.slice(10)}`;
+  }
+
+  return `${nextDate}T00:00:00.000Z`;
+}
+
 function normalizeTagName(name) {
   return String(name || '')
     .normalize('NFKC')
@@ -105,6 +124,32 @@ function sanitizeFileName(fileName) {
   if (!fileName) return null;
   if (fileName.includes('/') || fileName.includes('\\')) return null;
   return fileName.trim();
+}
+
+async function deleteManagedThumbnail(thumbnailPath) {
+  const normalized = String(thumbnailPath || '').trim();
+  if (!normalized.startsWith('/thumbnails/')) {
+    return;
+  }
+
+  const relativeName = normalized.slice('/thumbnails/'.length).split('?')[0];
+  const safeFileName = sanitizeFileName(decodePathParam(relativeName));
+  if (!safeFileName) {
+    return;
+  }
+
+  const absPath = path.join(thumbnailRoot, safeFileName);
+  if (!isPathInsideRoot(thumbnailRoot, absPath)) {
+    return;
+  }
+
+  try {
+    await fsp.unlink(absPath);
+  } catch (error) {
+    if (error?.code !== 'ENOENT') {
+      throw error;
+    }
+  }
 }
 
 function decodePathParam(input) {
@@ -302,7 +347,6 @@ function serializeVideoRow(row) {
     fileName: row.file_name,
     displayTitle: row.display_title,
     description: row.description,
-    uploadDate: row.upload_date,
     originalCreatedAt: row.original_created_at,
     duration: row.duration,
     width: row.width,
@@ -421,6 +465,7 @@ async function readPreviewSample(videoId) {
 }
 
 async function buildDatabaseSummary() {
+  const sampleLimit = 2;
   const overview = db
     .prepare(`
       SELECT
@@ -455,9 +500,9 @@ async function buildDatabaseSummary() {
             AND thumbnail_path IS NOT NULL
             AND TRIM(thumbnail_path) <> ''
           ORDER BY updated_at DESC, id DESC
-          LIMIT 6
+          LIMIT ?
         `)
-        .all()
+        .all(sampleLimit)
     )
   ]);
 
@@ -497,7 +542,7 @@ async function buildDatabaseSummary() {
     }
 
     samplePreviews.push(sample);
-    if (samplePreviews.length >= 6) {
+    if (samplePreviews.length >= sampleLimit) {
       break;
     }
   }
@@ -908,12 +953,12 @@ app.get('/api/videos', async (request) => {
   }
 
   if (query.fromDate) {
-    whereClauses.push('date(COALESCE(v.upload_date, v.original_created_at)) >= date(?)');
+    whereClauses.push("date(substr(v.created_at, 1, 10)) >= date(?)");
     params.push(String(query.fromDate));
   }
 
   if (query.toDate) {
-    whereClauses.push('date(COALESCE(v.upload_date, v.original_created_at)) <= date(?)');
+    whereClauses.push("date(substr(v.created_at, 1, 10)) <= date(?)");
     params.push(String(query.toDate));
   }
 
@@ -921,8 +966,8 @@ app.get('/api/videos', async (request) => {
   const randomSeedRaw = Number(query.randomSeed);
   const orderBy = {
     random: buildRandomOrderBy(randomSeedRaw),
-    upload_desc: 'date(COALESCE(v.upload_date, v.original_created_at)) DESC, v.id DESC',
-    upload_asc: 'date(COALESCE(v.upload_date, v.original_created_at)) ASC, v.id ASC',
+    upload_desc: "date(substr(v.created_at, 1, 10)) DESC, v.id DESC",
+    upload_asc: "date(substr(v.created_at, 1, 10)) ASC, v.id ASC",
     views_desc: 'v.view_count DESC, v.id DESC',
     recent_scan: 'v.last_scanned_at DESC, v.id DESC'
   }[sort] || buildRandomOrderBy(randomSeedRaw);
@@ -1008,8 +1053,8 @@ app.get('/api/videos/admin', async (request) => {
          v.quality_bucket AS qualityBucket,
          v.height AS height,
          v.view_count AS viewCount,
-         v.upload_date AS uploadDate,
          v.original_created_at AS originalCreatedAt,
+         v.created_at AS createdAt,
          v.is_missing AS isMissing,
          v.updated_at AS updatedAt
        FROM videos v
@@ -1132,8 +1177,9 @@ app.put('/api/videos/:id/metadata', async (request, reply) => {
   const body = request.body || {};
   const nextTitle = String(body.displayTitle ?? existing.display_title).trim();
   const nextDescription = String(body.description ?? existing.description).trim();
-  const nextUploadDateRaw = body.uploadDate === undefined ? existing.upload_date : String(body.uploadDate || '').trim();
-  const nextUploadDate = nextUploadDateRaw || null;
+  const nextCreatedAtInput = body.createdAtDate ?? body.uploadDate;
+  const nextCreatedAt =
+    nextCreatedAtInput === undefined ? existing.created_at : mergeDateInputIntoCreatedAt(existing.created_at, nextCreatedAtInput);
   const nextCategory = String(body.category ?? existing.category).trim();
   const nextViewCount = Number(body.viewCount ?? existing.view_count);
 
@@ -1145,17 +1191,21 @@ app.put('/api/videos/:id/metadata', async (request, reply) => {
     return reply.code(400).send({ error: 'viewCount must be >= 0.' });
   }
 
+  if (!nextCreatedAt) {
+    return reply.code(400).send({ error: 'createdAtDate must be a valid YYYY-MM-DD date.' });
+  }
+
   db.prepare(`
     UPDATE videos
     SET
       display_title = ?,
       description = ?,
-      upload_date = ?,
+      created_at = ?,
       category = ?,
       view_count = ?,
       updated_at = ?
     WHERE id = ?
-  `).run(nextTitle, nextDescription, nextUploadDate, nextCategory, Math.floor(nextViewCount), isoNow(), id);
+  `).run(nextTitle, nextDescription, nextCreatedAt, nextCategory, Math.floor(nextViewCount), isoNow(), id);
 
   if (Object.hasOwn(body, 'tags')) {
     replaceVideoTags(id, parseCsv(body.tags));
@@ -1233,7 +1283,7 @@ app.delete('/api/videos/:id', async (request, reply) => {
     return reply.code(400).send({ error: 'Invalid video id' });
   }
 
-  const existing = db.prepare('SELECT id, relative_path FROM videos WHERE id = ?').get(id);
+  const existing = db.prepare('SELECT id, relative_path, thumbnail_path FROM videos WHERE id = ?').get(id);
   if (!existing) {
     return reply.code(404).send({ error: 'Video not found' });
   }
@@ -1264,6 +1314,16 @@ app.delete('/api/videos/:id', async (request, reply) => {
     }
   }
 
+  try {
+    await deleteManagedThumbnail(existing.thumbnail_path);
+  } catch (error) {
+    return reply.code(500).send({ error: `Failed to delete thumbnail: ${error.message}` });
+  }
+
+  db.prepare('DELETE FROM comments WHERE video_id = ?').run(id);
+  db.prepare('DELETE FROM timeline_notes WHERE video_id = ?').run(id);
+  db.prepare('DELETE FROM video_tags WHERE video_id = ?').run(id);
+  db.prepare('DELETE FROM video_starrings WHERE video_id = ?').run(id);
   db.prepare('DELETE FROM videos WHERE id = ?').run(id);
   db.prepare('DELETE FROM tags WHERE id NOT IN (SELECT DISTINCT tag_id FROM video_tags)').run();
   db.prepare('DELETE FROM starrings WHERE id NOT IN (SELECT DISTINCT starring_id FROM video_starrings)').run();
@@ -1737,6 +1797,8 @@ const host = process.env.HOST || '127.0.0.1';
 async function start() {
   try {
     await configureWatcher();
+    await cleanupStaleTimelinePreviewTemps();
+    cleanupInterruptedLibraryScanState();
     await app.listen({ port, host });
     console.log(`Video player running at http://${host}:${port}`);
   } catch (error) {

@@ -17,9 +17,13 @@ const PREVIEW_VERSION = 1;
 const PREVIEW_WIDTH = 248;
 const TARGET_FRAME_COUNT = 90;
 const MIN_INTERVAL_SEC = 5;
+const MAX_CONCURRENT_GENERATIONS = 1;
+const TEMP_PREVIEW_DIR_PATTERN = /^video-\d+-tmp-\d+$/;
 const generationLocks = new Map();
+const generationQueue = [];
 
 let ffmpegPathCache;
+let activeGenerationCount = 0;
 
 function logPreviewInfo(message, details = '') {
   const suffix = details ? ` ${details}` : '';
@@ -29,6 +33,11 @@ function logPreviewInfo(message, details = '') {
 function logPreviewWarn(message, details = '') {
   const suffix = details ? ` ${details}` : '';
   console.warn(`[timeline-preview] ${message}${suffix}`);
+}
+
+function getQueueStateText({ afterCurrentJob = false } = {}) {
+  const nextActiveCount = afterCurrentJob ? Math.max(0, activeGenerationCount - 1) : activeGenerationCount;
+  return `queueLength=${generationQueue.length} activeJobs=${nextActiveCount}`;
 }
 
 async function resolveFfmpegPath() {
@@ -139,14 +148,13 @@ async function validateManifest(videoId, manifest, sourceHash) {
   }
 
   const previewDir = getPreviewDir(videoId);
-  const first = manifest.items[0]?.fileName;
-  const last = manifest.items[manifest.items.length - 1]?.fileName;
+  const expectedPaths = manifest.items
+    .map((item) => item?.fileName)
+    .filter(Boolean)
+    .map((fileName) => path.join(previewDir, fileName));
 
   try {
-    await Promise.all([
-      first ? fs.access(path.join(previewDir, first)) : Promise.resolve(),
-      last ? fs.access(path.join(previewDir, last)) : Promise.resolve()
-    ]);
+    await Promise.all(expectedPaths.map((absPath) => fs.access(absPath)));
     return manifest;
   } catch {
     return null;
@@ -180,7 +188,7 @@ async function generateManifest({ videoId, absPath, durationSec, sourceHash }) {
 
   logPreviewInfo(
     'generation started',
-    `video=${videoId} file="${path.basename(absPath)}" durationSec=${Math.round(Math.max(0, Number(durationSec) || 0))} intervalSec=${intervalSec}`
+    `video=${videoId} file="${path.basename(absPath)}" durationSec=${Math.round(Math.max(0, Number(durationSec) || 0))} intervalSec=${intervalSec} ${getQueueStateText()}`
   );
 
   await fs.mkdir(timelinePreviewRoot, { recursive: true });
@@ -243,16 +251,68 @@ async function generateManifest({ videoId, absPath, durationSec, sourceHash }) {
     await fs.rename(tempDir, previewDir);
     logPreviewInfo(
       'generation finished',
-      `video=${videoId} frames=${manifest.items.length} elapsedMs=${Date.now() - generationStartedAt}`
+      `video=${videoId} frames=${manifest.items.length} elapsedMs=${Date.now() - generationStartedAt} ${getQueueStateText({ afterCurrentJob: true })}`
     );
     return manifest;
   } catch (error) {
     logPreviewWarn(
       'generation failed',
-      `video=${videoId} file="${path.basename(absPath)}" error="${error?.message || 'unknown error'}"`
+      `video=${videoId} file="${path.basename(absPath)}" error="${error?.message || 'unknown error'}" ${getQueueStateText({ afterCurrentJob: true })}`
     );
     await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
     return null;
+  }
+}
+
+function pumpGenerationQueue() {
+  while (activeGenerationCount < MAX_CONCURRENT_GENERATIONS && generationQueue.length > 0) {
+    const job = generationQueue.shift();
+    activeGenerationCount += 1;
+    logPreviewInfo(
+      'queue started',
+      `video=${job.videoId} file="${path.basename(job.absPath)}" intervalSec=${getPreviewIntervalSec(job.durationSec)} ${getQueueStateText()}`
+    );
+
+    void (async () => {
+      try {
+        const manifest = await generateManifest(job);
+        job.resolve(manifest);
+      } finally {
+        activeGenerationCount = Math.max(0, activeGenerationCount - 1);
+        pumpGenerationQueue();
+      }
+    })();
+  }
+}
+
+function enqueuePreviewGeneration(job) {
+  return new Promise((resolve) => {
+    generationQueue.push({
+      ...job,
+      resolve
+    });
+
+    logPreviewInfo(
+      'queued',
+      `video=${job.videoId} file="${path.basename(job.absPath)}" intervalSec=${getPreviewIntervalSec(job.durationSec)} ${getQueueStateText()}`
+    );
+
+    pumpGenerationQueue();
+  });
+}
+
+export async function cleanupStaleTimelinePreviewTemps() {
+  await fs.mkdir(timelinePreviewRoot, { recursive: true });
+
+  const entries = await fs.readdir(timelinePreviewRoot, { withFileTypes: true }).catch(() => []);
+  const staleDirs = entries
+    .filter((entry) => entry.isDirectory() && TEMP_PREVIEW_DIR_PATTERN.test(entry.name))
+    .map((entry) => path.join(timelinePreviewRoot, entry.name));
+
+  await Promise.all(staleDirs.map((dirPath) => fs.rm(dirPath, { recursive: true, force: true }).catch(() => {})));
+
+  if (staleDirs.length > 0) {
+    logPreviewInfo('cleaned stale temp dirs', `count=${staleDirs.length}`);
   }
 }
 
@@ -275,7 +335,7 @@ export async function ensureTimelinePreviewManifest({ videoId, absPath, duration
     }
 
     logPreviewInfo('cache miss', `video=${videoId} file="${path.basename(absPath)}"`);
-    const generated = await generateManifest({ videoId, absPath, durationSec, sourceHash });
+    const generated = await enqueuePreviewGeneration({ videoId, absPath, durationSec, sourceHash });
     return generated ? createManifestResponse(generated) : null;
   })();
 

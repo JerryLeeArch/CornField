@@ -25,6 +25,13 @@ const commentEditRatingEditor = document.getElementById('commentEditRatingEditor
 const commentEditRatingInput = document.getElementById('commentEditRatingInput');
 const commentEditRatingLabel = document.getElementById('commentEditRatingLabel');
 const commentEditCancelBtn = document.getElementById('commentEditCancelBtn');
+const deleteConfirmDialog = document.getElementById('deleteConfirmDialog');
+const deleteConfirmTitle = document.getElementById('deleteConfirmTitle');
+const deleteConfirmMessage = document.getElementById('deleteConfirmMessage');
+const deleteConfirmDetails = document.getElementById('deleteConfirmDetails');
+const deleteConfirmCancelBtn = document.getElementById('deleteConfirmCancelBtn');
+const deleteConfirmMetadataBtn = document.getElementById('deleteConfirmMetadataBtn');
+const deleteConfirmProceedBtn = document.getElementById('deleteConfirmProceedBtn');
 
 const savedVolume = Number(localStorage.getItem('playerVolume'));
 const savedMuted = localStorage.getItem('playerMuted');
@@ -74,6 +81,10 @@ const noteEditState = {
 const commentEditState = {
   commentId: null,
   videoId: null
+};
+
+const deleteConfirmState = {
+  resolve: null
 };
 
 const activeVideoView = {
@@ -169,6 +180,43 @@ function openCommentEditDialog({ comment, videoId }) {
 
   commentEditContentInput.focus();
   commentEditContentInput.setSelectionRange(commentEditContentInput.value.length, commentEditContentInput.value.length);
+}
+
+function settleDeleteConfirm(result) {
+  const resolve = deleteConfirmState.resolve;
+  deleteConfirmState.resolve = null;
+
+  if (deleteConfirmDialog.open) {
+    deleteConfirmDialog.close();
+  }
+
+  if (typeof resolve === 'function') {
+    resolve(result);
+  }
+}
+
+function confirmVideoDeletion({ videoId, displayTitle, fileName }) {
+  if (typeof deleteConfirmState.resolve === 'function') {
+    deleteConfirmState.resolve(false);
+    deleteConfirmState.resolve = null;
+  }
+
+  deleteConfirmTitle.textContent = 'Delete Video?';
+  deleteConfirmMessage.textContent =
+    'Delete Video removes the original file and all CornField metadata. Delete Metadata Only keeps the original file, removes all CornField data for this video, and Scan Library will import it again as a new video later.';
+  deleteConfirmDetails.innerHTML = `
+    <div><strong>ID:</strong> ${escapeHtml(videoId)}</div>
+    <div><strong>Display Title:</strong> ${escapeHtml(displayTitle || '-')}</div>
+    <div><strong>File Name:</strong> ${escapeHtml(fileName || '-')}</div>
+  `;
+
+  if (!deleteConfirmDialog.open) {
+    deleteConfirmDialog.showModal();
+  }
+
+  return new Promise((resolve) => {
+    deleteConfirmState.resolve = resolve;
+  });
 }
 
 function setHash(hash) {
@@ -506,8 +554,8 @@ function bindMarkerTimeInput(input, getFallbackSeconds) {
   });
 }
 
-function firstAvailableDate(video) {
-  return video.uploadDate || video.originalCreatedAt;
+function getAddedDate(video) {
+  return video.createdAt;
 }
 
 function showToast(message, isError = false) {
@@ -535,12 +583,17 @@ async function getDatabaseSummary({ force = false } = {}) {
     return state.dbSummary.data;
   }
 
-  const data = await api('/api/database/summary');
-  state.dbSummary = {
-    data,
-    loadedAt: now
-  };
-  return data;
+  try {
+    const data = await api('/api/database/summary');
+    state.dbSummary = {
+      data,
+      loadedAt: Date.now()
+    };
+    return data;
+  } catch {
+    state.dbSummary = null;
+    return null;
+  }
 }
 
 function syncLibraryScanningIndicator() {
@@ -675,11 +728,11 @@ function hideScanPreview() {
   scanPreviewBox.hidden = true;
 }
 
-function showScanPreview(addedCount, deletedCount, missingThumbnailCount, rootPath) {
+function showScanPreview(addedCount, missingCount, missingThumbnailCount, rootPath) {
   state.pendingScanRoot = rootPath;
   const parts = [
-    `${addedCount} videos added`,
-    `${deletedCount} videos deleted`
+    `Est. ${addedCount} videos added`,
+    `Est. ${missingCount} videos marked missing`
   ];
 
   if (missingThumbnailCount > 0) {
@@ -981,7 +1034,7 @@ function createVideoCard(video) {
         <span>${formatDuration(Number(video.duration))}</span>
       </div>
       <div class="meta-row">
-        <span>${formatDate(firstAvailableDate(video))}</span>
+        <span>${formatDate(getAddedDate(video))}</span>
         <span>Views ${Number(video.viewCount || 0)}</span>
       </div>
       ${getCardRatingRowHtml(video, { hideWhenEmpty: true })}
@@ -1072,8 +1125,8 @@ function getLibraryToolbarHtml(options = {}) {
         </select>
         <select id="sortSelect">
           <option value="random">Random</option>
-          <option value="upload_desc">Upload Date (Newest)</option>
-          <option value="upload_asc">Upload Date (Oldest)</option>
+          <option value="upload_desc">Date Added (Newest)</option>
+          <option value="upload_asc">Date Added (Oldest)</option>
           <option value="views_desc">Views (High to Low)</option>
           <option value="recent_scan">Recently Scanned</option>
         </select>
@@ -1354,7 +1407,7 @@ async function renderVideoView(videoId) {
           <div class="meta-row" style="margin-top: .55rem;">
             <span>${escapeHtml(video.qualityBucket || 'unknown')} (${video.width || 0}x${video.height || 0})</span>
             <span>Views ${video.viewCount || 0}</span>
-            <span>Upload ${formatDate(firstAvailableDate(video))}</span>
+            <span>Added ${formatDate(getAddedDate(video))}</span>
           </div>
           <div class="meta-row rating-row" style="margin-top: .35rem;">
             <span class="${videoRatingCount ? 'rating-summary' : 'muted'}">${videoRatingText}</span>
@@ -1400,7 +1453,7 @@ async function renderVideoView(videoId) {
               <label>Starring (comma separated) <input id="metaStarrings" value="${escapeHtml((video.starrings || []).join(', '))}" /></label>
               <label>View Count <input id="metaViewCount" type="number" min="0" value="${Number(video.viewCount || 0)}" /></label>
               <label>Display Title <input id="metaTitle" value="${escapeHtml(video.displayTitle || '')}" required /></label>
-              <label>Upload Date <input id="metaUploadDate" type="date" value="${escapeHtml((video.uploadDate || '').slice(0, 10))}" /></label>
+              <label>Date Added <input id="metaCreatedAtDate" type="date" value="${escapeHtml((video.createdAt || '').slice(0, 10))}" /></label>
               <button type="submit" class="primary">Save Metadata</button>
             </form>
 
@@ -2067,7 +2120,7 @@ async function renderVideoView(videoId) {
           method: 'PUT',
           body: JSON.stringify({
             displayTitle: document.getElementById('metaTitle').value.trim(),
-            uploadDate: document.getElementById('metaUploadDate').value,
+            createdAtDate: document.getElementById('metaCreatedAtDate').value,
             viewCount: Number(document.getElementById('metaViewCount').value || 0),
             tags: document.getElementById('metaTags').value
               .split(',')
@@ -2431,20 +2484,25 @@ async function renderDatabaseView() {
     const totalVideos = Number(totals.totalVideos || 0);
     const thumbnailCoverage = totalVideos > 0 ? formatPercent(totals.thumbnailCount, totalVideos) : '0%';
     const previewCoverage = totalVideos > 0 ? formatPercent(totals.previewCount, totalVideos) : '0%';
+    const interactionCounts = {
+      views: Number(totals.totalViews || 0),
+      reviews: Number(totals.commentCount || 0),
+      markers: Number(totals.noteCount || 0),
+      tags: Number(totals.tagCount || 0),
+      starrings: Number(totals.starringCount || 0)
+    };
+    const totalInteractions = Object.values(interactionCounts).reduce((sum, value) => sum + value, 0);
 
     const rowsHtml = (data.items || [])
       .map(
         (item) => `
           <tr data-video-id="${item.id}">
             <td>${item.id}</td>
-            <td><input data-db-title value="${escapeHtml(item.displayTitle || '')}" /></td>
-            <td>${escapeHtml(item.fileName || '')}</td>
-            <td><input data-db-category value="${escapeHtml(item.category || '')}" /></td>
+            <td class="db-title-cell">${escapeHtml(item.displayTitle || '')}</td>
+            <td class="db-file-cell">${escapeHtml(item.fileName || '')}</td>
             <td>${escapeHtml(item.qualityBucket || 'unknown')}</td>
-            <td><input data-db-views type="number" min="0" value="${Number(item.viewCount || 0)}" /></td>
-            <td>${formatDate(item.uploadDate || item.originalCreatedAt)}</td>
+            <td>${formatDate(item.createdAt)}</td>
             <td class="db-actions">
-              <button data-db-save>Save</button>
               <button data-db-open>Open</button>
               <button class="danger-btn" data-db-delete>Delete</button>
             </td>
@@ -2481,9 +2539,8 @@ async function renderDatabaseView() {
       )
       .join('');
 
-    mainEl.innerHTML = `
-      <section class="section-panel">
-        <div class="panel-body">
+    const summaryHtml = summary
+      ? `
           <div class="db-header">
             <div>
               <h2 class="section-title">Video DB</h2>
@@ -2511,13 +2568,15 @@ async function renderDatabaseView() {
               </div>
             </article>
             <article class="db-summary-card">
-              <span class="db-summary-label">Metadata</span>
-              <strong>${formatNumber(totals.tagCount || 0)}</strong>
-              <div class="db-summary-value-sub">tags across ${formatNumber(totals.categoryCount || 0)} categories</div>
+              <span class="db-summary-label">Total Interactions</span>
+              <strong>${formatNumber(totalInteractions)}</strong>
+              <div class="db-summary-value-sub">CornField activity and metadata signals</div>
               <div class="db-summary-inline">
-                <span>${formatNumber(totals.starringCount || 0)} starrings</span>
-                <span>${formatNumber(totals.commentCount || 0)} comments</span>
-                <span>${formatNumber(totals.noteCount || 0)} notes</span>
+                <span>${formatNumber(interactionCounts.views)} views</span>
+                <span>${formatNumber(interactionCounts.reviews)} reviews</span>
+                <span>${formatNumber(interactionCounts.markers)} markers</span>
+                <span>${formatNumber(interactionCounts.tags)} tags</span>
+                <span>${formatNumber(interactionCounts.starrings)} starrings</span>
               </div>
             </article>
             <article class="db-summary-card">
@@ -2551,6 +2610,16 @@ async function renderDatabaseView() {
               </div>
             </section>
           </div>
+        `
+      : `
+          <h2 class="section-title">Video DB</h2>
+          <div class="muted" style="margin-top: 0.45rem;">Summary is temporarily unavailable, but the database table is still usable.</div>
+        `;
+
+    mainEl.innerHTML = `
+      <section class="section-panel">
+        <div class="panel-body">
+          ${summaryHtml}
           <div class="db-toolbar">
             <input id="dbSearchInput" type="search" placeholder="Search title, file, category, tag, starring..." value="${escapeHtml(state.dbFilters.q || '')}" />
             <button id="dbApplyBtn" class="primary">Search</button>
@@ -2562,17 +2631,15 @@ async function renderDatabaseView() {
               <thead>
                 <tr>
                   <th>ID</th>
-                  <th>Display Title</th>
-                  <th>File Name</th>
-                  <th>Category</th>
+                  <th class="db-title-cell">Display Title</th>
+                  <th class="db-file-cell">File Name</th>
                   <th>Quality</th>
-                  <th>Views</th>
-                  <th>Date</th>
+                  <th>Date Added</th>
                   <th>Actions</th>
                 </tr>
               </thead>
               <tbody>
-                ${rowsHtml || '<tr><td colspan="8" class="muted">No videos found.</td></tr>'}
+                ${rowsHtml || '<tr><td colspan="6" class="muted">No videos found.</td></tr>'}
               </tbody>
             </table>
           </div>
@@ -2627,47 +2694,28 @@ async function renderDatabaseView() {
       });
     });
 
-    document.querySelectorAll('[data-db-save]').forEach((btn) => {
-      btn.addEventListener('click', async (event) => {
-        const tr = event.currentTarget.closest('tr');
-        const videoId = Number(tr?.dataset.videoId || 0);
-        const displayTitle = tr.querySelector('[data-db-title]')?.value?.trim() || '';
-        const category = tr.querySelector('[data-db-category]')?.value?.trim() || '';
-        const viewCount = Number(tr.querySelector('[data-db-views]')?.value || 0);
-
-        if (!videoId || !displayTitle) {
-          showToast('Display title is required.', true);
-          return;
-        }
-
-        try {
-          await api(`/api/videos/${videoId}/metadata`, {
-            method: 'PUT',
-            body: JSON.stringify({ displayTitle, category, viewCount })
-          });
-          invalidateDatabaseSummary();
-          showToast('Row updated');
-        } catch (error) {
-          showToast(error.message, true);
-        }
-      });
-    });
-
     document.querySelectorAll('[data-db-delete]').forEach((btn) => {
       btn.addEventListener('click', async (event) => {
         const tr = event.currentTarget.closest('tr');
         const videoId = Number(tr?.dataset.videoId || 0);
+        const displayTitle = tr?.querySelector('.db-title-cell')?.textContent?.trim() || '';
+        const fileName = tr?.querySelector('.db-file-cell')?.textContent?.trim() || '';
         if (!videoId) return;
 
-        if (!confirm('Delete this video file and DB row?')) return;
+        const deleteMode = await confirmVideoDeletion({ videoId, displayTitle, fileName });
+        if (!deleteMode) return;
 
         try {
           await api(`/api/videos/${videoId}`, {
             method: 'DELETE',
-            body: JSON.stringify({ deleteFile: true })
+            body: JSON.stringify({ deleteFile: deleteMode === 'video' })
           });
           invalidateDatabaseSummary();
-          showToast('Video deleted');
+          showToast(
+            deleteMode === 'video'
+              ? 'Video deleted'
+              : 'Metadata deleted. Scan Library to import this file again as a new video.'
+          );
           renderRoute();
         } catch (error) {
           showToast(error.message, true);
@@ -2871,6 +2919,26 @@ function setupGlobalEvents() {
     closeCommentEditDialog();
   });
 
+  deleteConfirmCancelBtn.addEventListener('click', () => {
+    settleDeleteConfirm(false);
+  });
+
+  deleteConfirmMetadataBtn.addEventListener('click', () => {
+    settleDeleteConfirm('metadata');
+  });
+
+  deleteConfirmProceedBtn.addEventListener('click', () => {
+    settleDeleteConfirm('video');
+  });
+
+  deleteConfirmDialog.addEventListener('close', () => {
+    if (typeof deleteConfirmState.resolve === 'function') {
+      const resolve = deleteConfirmState.resolve;
+      deleteConfirmState.resolve = null;
+      resolve(false);
+    }
+  });
+
   commentEditDialog.addEventListener('close', () => {
     resetCommentEditState();
   });
@@ -2935,7 +3003,7 @@ function setupGlobalEvents() {
       hideScanPreview();
       const summaryParts = [
         `${Number(scanResult.addedCount || 0)} added`,
-        `${Number(scanResult.deletedCount || 0)} deleted`
+        `${Number(scanResult.missingCount ?? scanResult.deletedCount ?? 0)} marked missing`
       ];
       if (Number(scanResult.autoThumbnailsCreated || 0) > 0) {
         summaryParts.push(`${Number(scanResult.autoThumbnailsCreated || 0)} thumbnails auto-assigned`);
@@ -2975,16 +3043,16 @@ function setupGlobalEvents() {
       });
 
       const addedCount = Number(preview.addedCount || 0);
-      const deletedCount = Number(preview.deletedCount || 0);
+      const missingCount = Number(preview.missingCount ?? preview.deletedCount ?? 0);
       const missingThumbnailCount = Number(preview.missingThumbnailCount || 0);
 
-      if (addedCount === 0 && deletedCount === 0 && missingThumbnailCount === 0) {
+      if (addedCount === 0 && missingCount === 0 && missingThumbnailCount === 0) {
         hideScanPreview();
         showToast('No library or thumbnail changes detected');
         return;
       }
 
-      showScanPreview(addedCount, deletedCount, missingThumbnailCount, root);
+      showScanPreview(addedCount, missingCount, missingThumbnailCount, root);
     } catch (error) {
       showToast(error.message, true);
     } finally {
