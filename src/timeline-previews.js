@@ -37,7 +37,7 @@ function logPreviewWarn(message, details = '') {
 
 function getQueueStateText({ afterCurrentJob = false } = {}) {
   const nextActiveCount = afterCurrentJob ? Math.max(0, activeGenerationCount - 1) : activeGenerationCount;
-  return `queueLength=${generationQueue.length} activeJobs=${nextActiveCount}`;
+  return `queue=${generationQueue.length} active=${nextActiveCount}`;
 }
 
 async function resolveFfmpegPath() {
@@ -186,10 +186,6 @@ async function generateManifest({ videoId, absPath, durationSec, sourceHash }) {
   const outputPattern = path.join(tempDir, 'frame-%05d.jpg');
   const generationStartedAt = Date.now();
 
-  logPreviewInfo(
-    'generation started',
-    `video=${videoId} file="${path.basename(absPath)}" durationSec=${Math.round(Math.max(0, Number(durationSec) || 0))} intervalSec=${intervalSec} ${getQueueStateText()}`
-  );
 
   await fs.mkdir(timelinePreviewRoot, { recursive: true });
   await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
@@ -249,10 +245,7 @@ async function generateManifest({ videoId, absPath, durationSec, sourceHash }) {
     await fs.writeFile(path.join(tempDir, 'manifest.json'), JSON.stringify(manifest, null, 2));
     await fs.rm(previewDir, { recursive: true, force: true }).catch(() => {});
     await fs.rename(tempDir, previewDir);
-    logPreviewInfo(
-      'generation finished',
-      `video=${videoId} frames=${manifest.items.length} elapsedMs=${Date.now() - generationStartedAt} ${getQueueStateText({ afterCurrentJob: true })}`
-    );
+    logPreviewInfo('done', `video=${videoId} ${getQueueStateText({ afterCurrentJob: true })}`);
     return manifest;
   } catch (error) {
     logPreviewWarn(
@@ -268,10 +261,6 @@ function pumpGenerationQueue() {
   while (activeGenerationCount < MAX_CONCURRENT_GENERATIONS && generationQueue.length > 0) {
     const job = generationQueue.shift();
     activeGenerationCount += 1;
-    logPreviewInfo(
-      'queue started',
-      `video=${job.videoId} file="${path.basename(job.absPath)}" intervalSec=${getPreviewIntervalSec(job.durationSec)} ${getQueueStateText()}`
-    );
 
     void (async () => {
       try {
@@ -292,12 +281,8 @@ function enqueuePreviewGeneration(job) {
       resolve
     });
 
-    logPreviewInfo(
-      'queued',
-      `video=${job.videoId} file="${path.basename(job.absPath)}" intervalSec=${getPreviewIntervalSec(job.durationSec)} ${getQueueStateText()}`
-    );
-
     pumpGenerationQueue();
+    logPreviewInfo('enqueued', getQueueStateText());
   });
 }
 
@@ -312,7 +297,7 @@ export async function cleanupStaleTimelinePreviewTemps() {
   await Promise.all(staleDirs.map((dirPath) => fs.rm(dirPath, { recursive: true, force: true }).catch(() => {})));
 
   if (staleDirs.length > 0) {
-    logPreviewInfo('cleaned stale temp dirs', `count=${staleDirs.length}`);
+    logPreviewInfo(`successfully cleaned up ${staleDirs.length} incomplete preview(s) from last session`);
   }
 }
 
@@ -330,7 +315,6 @@ export async function ensureTimelinePreviewManifest({ videoId, absPath, duration
     const cached = await validateManifest(videoId, await readManifest(videoId), sourceHash);
 
     if (cached) {
-      logPreviewInfo('cache hit', `video=${videoId} frames=${cached.items.length}`);
       return createManifestResponse(cached);
     }
 
