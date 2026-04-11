@@ -11,6 +11,7 @@ const scanProceedBtn = document.getElementById('scanProceedBtn');
 const scanCancelBtn = document.getElementById('scanCancelBtn');
 const scanPreviewBox = document.getElementById('scanPreviewBox');
 const scanPreviewText = document.getElementById('scanPreviewText');
+const scanStatusText = document.getElementById('scanStatusText');
 const closeSettingsBtn = document.getElementById('closeSettings');
 const noteEditDialog = document.getElementById('noteEditDialog');
 const noteEditForm = document.getElementById('noteEditForm');
@@ -25,6 +26,10 @@ const commentEditRatingEditor = document.getElementById('commentEditRatingEditor
 const commentEditRatingInput = document.getElementById('commentEditRatingInput');
 const commentEditRatingLabel = document.getElementById('commentEditRatingLabel');
 const commentEditCancelBtn = document.getElementById('commentEditCancelBtn');
+const confirmDialog = document.getElementById('confirmDialog');
+const confirmDialogMessage = document.getElementById('confirmDialogMessage');
+const confirmDialogOk = document.getElementById('confirmDialogOk');
+const confirmDialogCancel = document.getElementById('confirmDialogCancel');
 const deleteConfirmDialog = document.getElementById('deleteConfirmDialog');
 const deleteConfirmTitle = document.getElementById('deleteConfirmTitle');
 const deleteConfirmMessage = document.getElementById('deleteConfirmMessage');
@@ -35,6 +40,7 @@ const deleteConfirmProceedBtn = document.getElementById('deleteConfirmProceedBtn
 
 const savedVolume = Number(localStorage.getItem('playerVolume'));
 const savedMuted = localStorage.getItem('playerMuted');
+const savedSort = localStorage.getItem('librarySort');
 
 const initialVolume = Number.isFinite(savedVolume) ? Math.max(0, Math.min(1, savedVolume)) : 1;
 const initialMuted = savedMuted === '1';
@@ -45,7 +51,7 @@ const state = {
   filters: {
     q: '',
     qualityMin: '',
-    sort: 'random',
+    sort: savedSort || 'random',
     tag: '',
     starring: ''
   },
@@ -558,6 +564,26 @@ function getAddedDate(video) {
   return video.createdAt;
 }
 
+function showConfirm(message, { okLabel = 'Delete' } = {}) {
+  return new Promise((resolve) => {
+    confirmDialogMessage.textContent = message;
+    confirmDialogOk.textContent = okLabel;
+    const cleanup = () => {
+      confirmDialogOk.removeEventListener('click', onOk);
+      confirmDialogCancel.removeEventListener('click', onCancel);
+      confirmDialog.removeEventListener('close', onClose);
+      confirmDialog.close();
+    };
+    const onOk = () => { cleanup(); resolve(true); };
+    const onCancel = () => { cleanup(); resolve(false); };
+    const onClose = () => { cleanup(); resolve(false); };
+    confirmDialogOk.addEventListener('click', onOk);
+    confirmDialogCancel.addEventListener('click', onCancel);
+    confirmDialog.addEventListener('close', onClose);
+    confirmDialog.showModal();
+  });
+}
+
 function showToast(message, isError = false) {
   const toast = document.createElement('div');
   toast.className = isError ? 'warning error' : 'warning';
@@ -726,9 +752,12 @@ function hideScanPreview() {
   state.pendingScanRoot = '';
   scanPreviewText.textContent = '';
   scanPreviewBox.hidden = true;
+  scanStatusText.textContent = '';
+  scanStatusText.hidden = true;
 }
 
 function showScanPreview(addedCount, missingCount, missingThumbnailCount, rootPath) {
+  scanStatusText.hidden = true;
   state.pendingScanRoot = rootPath;
   const parts = [
     `Est. ${addedCount} videos added`,
@@ -1103,7 +1132,7 @@ function buildLibraryQuery(options = {}) {
   if (state.filters.q) q.set('q', state.filters.q);
   if (state.filters.qualityMin) q.set('qualityMin', state.filters.qualityMin);
   if (state.filters.sort) q.set('sort', state.filters.sort);
-  if (state.filters.sort === 'random') q.set('randomSeed', String(state.libraryRandomSeed));
+  q.set('randomSeed', String(state.libraryRandomSeed));
   if (state.filters.tag) q.set('tag', state.filters.tag);
   if (state.filters.starring) q.set('starring', state.filters.starring);
 
@@ -1125,10 +1154,12 @@ function getLibraryToolbarHtml(options = {}) {
         </select>
         <select id="sortSelect">
           <option value="random">Random</option>
+          <option value="views_desc">Views (High to Low)</option>
+          <option value="views_asc">Views (Low to High)</option>
+          <option value="rating_desc">Rating (High to Low)</option>
+          <option value="rating_asc">Rating (Low to High)</option>
           <option value="upload_desc">Date Added (Newest)</option>
           <option value="upload_asc">Date Added (Oldest)</option>
-          <option value="views_desc">Views (High to Low)</option>
-          <option value="recent_scan">Recently Scanned</option>
         </select>
       </div>
       ${includeTagScroller ? '<div class="tag-scroller-wrap"><div id="tagScroller" class="tag-scroller"></div></div>' : ''}
@@ -1164,6 +1195,7 @@ function bindLibraryToolbar(options = {}) {
       tag: scopedTag,
       starring: scopedStarring
     };
+    localStorage.setItem('librarySort', nextSort);
 
     if (options.navigateToLibrary) {
       setHash('#/library');
@@ -2258,7 +2290,7 @@ async function renderVideoView(videoId) {
     document.querySelectorAll('[data-comment-delete]').forEach((btn) => {
       btn.addEventListener('click', async (event) => {
         const id = Number(event.currentTarget.getAttribute('data-comment-delete'));
-        if (!confirm('Delete this review?')) return;
+        if (!await showConfirm('Delete this review?')) return;
 
         try {
           await api(`/api/comments/${id}`, { method: 'DELETE' });
@@ -2311,6 +2343,7 @@ async function renderVideoView(videoId) {
         timestampSec: Number(videoEl.currentTime || 0),
         memo: noteMemoInput.value
       });
+      addMarkerBtn.blur();
     });
 
     noteForm.addEventListener('submit', async (event) => {
@@ -2354,7 +2387,7 @@ async function renderVideoView(videoId) {
       if (!deleteBtn) return;
 
       const id = Number(deleteBtn.getAttribute('data-note-delete'));
-      if (!confirm('Delete this jump marker?')) return;
+      if (!await showConfirm('Delete this jump marker?')) return;
 
       try {
         await api(`/api/notes/${id}`, { method: 'DELETE' });
@@ -2682,6 +2715,22 @@ async function renderDatabaseView() {
         const tr = event.currentTarget.closest('tr');
         const videoId = Number(tr?.dataset.videoId || 0);
         if (videoId > 0) setHash(`#/video/${videoId}`);
+      });
+    });
+
+    requestAnimationFrame(() => {
+      document.querySelectorAll('.db-media-grid').forEach((grid) => {
+        const cards = Array.from(grid.children).filter((el) => el.classList.contains('db-media-card'));
+        if (cards.length === 0) return;
+        const gridWidth = grid.clientWidth;
+        const minCardWidth = 190;
+        const gap = 10;
+        const columns = Math.max(1, Math.floor((gridWidth + gap) / (minCardWidth + gap)));
+        cards.forEach((card, i) => {
+          card.style.display = i < columns ? '' : 'none';
+        });
+        const countEl = grid.closest('.db-sample-panel')?.querySelector('.muted');
+        if (countEl) countEl.textContent = `${Math.min(cards.length, columns)} shown`;
       });
     });
 
@@ -3048,7 +3097,8 @@ function setupGlobalEvents() {
 
       if (addedCount === 0 && missingCount === 0 && missingThumbnailCount === 0) {
         hideScanPreview();
-        showToast('No library or thumbnail changes detected');
+        scanStatusText.textContent = 'No library or thumbnail changes detected';
+        scanStatusText.hidden = false;
         return;
       }
 

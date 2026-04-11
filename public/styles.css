@@ -1,19 +1,19 @@
 :root {
-  --bg: #0d1016;
-  --bg-accent: #151b26;
-  --surface: #161d28;
-  --surface-2: #1b2432;
+  --bg: #080808;
+  --bg-accent: #111111;
+  --surface: #121212;
+  --surface-2: #181818;
   --ink: #edf2ff;
   --muted: #9ca8c2;
-  --line: #2b3648;
+  --line: #252525;
   --accent: #f5bc42;
   --accent-strong: #d8a12f;
   --danger: #ff6d73;
-  --chip: #222d3e;
+  --chip: #1a1a1a;
   --chip-active: #f5bc42;
   --shadow: 0 18px 36px rgba(0, 0, 0, 0.35);
   --player-accent: var(--accent);
-  --scroll-track: rgba(18, 24, 35, 0.96);
+  --scroll-track: rgba(10, 10, 10, 0.96);
   --scroll-thumb: rgba(245, 188, 66, 0.72);
   --scroll-thumb-hover: rgba(255, 214, 122, 0.92);
 }
@@ -30,7 +30,7 @@ html {
 
 body {
   margin: 0;
-  background: radial-gradient(circle at 15% 5%, #1b2330 0%, var(--bg) 45%, #090c12 100%);
+  background: radial-gradient(circle at 15% 5%, #141414 0%, var(--bg) 45%, #040404 100%);
   color: var(--ink);
   font-family: 'IBM Plex Sans', 'Pretendard', 'Noto Sans KR', sans-serif;
   min-height: 100vh;
@@ -232,7 +232,7 @@ textarea {
   border-radius: 0.6rem;
   padding: 0.55rem 0.65rem;
   font-size: 0.95rem;
-  background: #121925;
+  background: var(--surface);
   color: var(--ink);
 }
 
@@ -318,13 +318,13 @@ textarea {
   width: 100%;
   aspect-ratio: 16 / 9;
   object-fit: cover;
-  background: #202838;
+  background: var(--surface-2);
 }
 
 .video-card .thumb-placeholder {
   width: 100%;
   aspect-ratio: 16 / 9;
-  background: linear-gradient(120deg, #2a3548, #1e2635);
+  background: linear-gradient(120deg, var(--surface-2), var(--surface));
 }
 
 .video-card .content {
@@ -724,7 +724,7 @@ textarea {
 .subtle-btn {
   width: 100%;
   margin-top: 0.7rem;
-  background: #182131;
+  background: var(--surface);
 }
 
 .meta-editor-form label {
@@ -762,7 +762,7 @@ textarea {
   padding: 0 0.7rem;
   border: 1px solid var(--line);
   border-radius: 0.6rem;
-  background: #121925;
+  background: var(--surface);
   color: var(--muted);
   white-space: nowrap;
 }
@@ -836,8 +836,8 @@ textarea {
 .rating-clear,
 .rating-star {
   border-color: color-mix(in srgb, var(--line) 82%, #42546f);
-  background: #182131;
-  color: #8794ae;
+  background: var(--surface);
+  color: var(--muted);
   padding: 0.24rem 0.5rem;
 }
 
@@ -903,8 +903,7 @@ textarea {
   border: 1px solid color-mix(in srgb, var(--line) 88%, #41516a);
   border-radius: 0.9rem;
   background:
-    linear-gradient(180deg, rgba(255, 214, 122, 0.07), rgba(22, 29, 40, 0.96) 26%),
-    color-mix(in srgb, var(--surface) 94%, transparent);
+    linear-gradient(180deg, rgba(255, 214, 122, 0.07), var(--surface) 26%);
 }
 
 .db-summary-label {
@@ -925,7 +924,7 @@ textarea {
 
 .db-summary-value-sub {
   margin-top: 0.28rem;
-  color: #d2dcf1;
+  color: var(--muted);
   font-size: 0.92rem;
 }
 
@@ -940,7 +939,7 @@ textarea {
   padding: 0.2rem 0.5rem;
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 999px;
-  background: rgba(13, 18, 28, 0.64);
+  background: rgba(0, 0, 0, 0.3);
   color: var(--muted);
   font-size: 0.77rem;
 }
@@ -957,7 +956,7 @@ textarea {
   padding: 0.85rem;
   border: 1px solid var(--line);
   border-radius: 0.85rem;
-  background: rgba(14, 20, 31, 0.72);
+  background: var(--surface);
 }
 
 .db-sample-head {
@@ -987,7 +986,7 @@ textarea {
   appearance: none;
   border: 1px solid color-mix(in srgb, var(--line) 86%, #40516c);
   border-radius: 0.82rem;
-  background: #121925;
+  background: var(--surface);
   color: inherit;
   font: inherit;
   text-align: left;
@@ -1008,7 +1007,7 @@ textarea {
   width: 100%;
   aspect-ratio: 16 / 9;
   object-fit: cover;
-  background: linear-gradient(135deg, #283245, #161d29);
+  background: linear-gradient(135deg, var(--surface-2), var(--bg));
 }
 
 .db-media-card-body {
@@ -1034,7 +1033,8 @@ textarea {
   border: 1px solid var(--line);
   border-radius: 0.75rem;
   margin-top: 0.8rem;
-  background: #121925;
+  background: var(--surface);
+  max-height: 70vh;
 }
 
 .db-table {
@@ -1053,9 +1053,12 @@ textarea {
 }
 
 .db-table thead th {
-  color: #d9e3f7;
+  color: var(--ink);
   font-weight: 600;
-  background: #172130;
+  background: var(--surface-2);
+  position: sticky;
+  top: 0;
+  z-index: 2;
 }
 
 .db-table .db-title-cell {
@@ -1068,11 +1071,11 @@ textarea {
 .db-table .db-file-cell {
   min-width: 320px;
   line-height: 1.35;
-  color: #d7e0f2;
+  color: var(--muted);
 }
 
 .db-table tbody tr:hover {
-  background: #1a2534;
+  background: var(--surface-2);
 }
 
 .db-table input {
@@ -1130,8 +1133,17 @@ textarea {
   min-height: 120px;
 }
 
+.confirm-dialog {
+  max-width: 360px;
+}
+
+.confirm-dialog #confirmDialogMessage {
+  font-size: 0.95rem;
+  line-height: 1.5;
+}
+
 .delete-confirm-copy {
-  color: #d7e0f2;
+  color: var(--ink);
   line-height: 1.5;
 }
 
@@ -1141,7 +1153,7 @@ textarea {
   padding: 0.75rem 0.85rem;
   border: 1px solid var(--line);
   border-radius: 0.75rem;
-  background: #121925;
+  background: var(--surface);
   font-size: 0.92rem;
   line-height: 1.45;
   word-break: break-word;
@@ -1210,7 +1222,7 @@ textarea {
 
 .scan-preview-box {
   border: 1px solid var(--line);
-  background: #121a27;
+  background: var(--surface);
   border-radius: 0.75rem;
   padding: 0.7rem;
   margin-top: 0.4rem;
@@ -1218,6 +1230,12 @@ textarea {
 
 .scan-preview-box .status {
   margin: 0;
+}
+
+.scan-status-text {
+  color: var(--accent);
+  font-size: 0.8rem;
+  margin-top: 0.3rem;
 }
 
 .split-sections {

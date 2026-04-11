@@ -73,6 +73,7 @@
             <button type="button" id="scanCancelBtn">Cancel</button>
           </div>
         </div>
+        <div id="scanStatusText" class="scan-status-text" hidden></div>
         <div class="dialog-actions">
           <button type="button" id="closeSettings">Close</button>
         </div>
@@ -96,6 +97,14 @@
           <button type="submit" class="primary">Save</button>
         </div>
       </form>
+    </dialog>
+
+    <dialog id="confirmDialog" class="settings-dialog confirm-dialog">
+      <div id="confirmDialogMessage"></div>
+      <div class="dialog-actions">
+        <button type="button" id="confirmDialogOk" class="primary">Delete</button>
+        <button type="button" id="confirmDialogCancel">Cancel</button>
+      </div>
     </dialog>
 
     <dialog id="commentEditDialog" class="settings-dialog comment-edit-dialog">
@@ -146,10 +155,12 @@
           </select>
           <select id="sortSelect">
             <option value="random">Random</option>
+            <option value="views_desc">Views (High to Low)</option>
+            <option value="views_asc">Views (Low to High)</option>
+            <option value="rating_desc">Rating (High to Low)</option>
+            <option value="rating_asc">Rating (Low to High)</option>
             <option value="upload_desc">Date Added (Newest)</option>
             <option value="upload_asc">Date Added (Oldest)</option>
-            <option value="views_desc">Views (High to Low)</option>
-            <option value="recent_scan">Recently Scanned</option>
           </select>
         </div>
         <div class="tag-scroller-wrap">

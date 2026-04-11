@@ -465,7 +465,7 @@ async function readPreviewSample(videoId) {
 }
 
 async function buildDatabaseSummary() {
-  const sampleLimit = 2;
+  const sampleLimit = 8;
   const overview = db
     .prepare(`
       SELECT
@@ -966,10 +966,12 @@ app.get('/api/videos', async (request) => {
   const randomSeedRaw = Number(query.randomSeed);
   const orderBy = {
     random: buildRandomOrderBy(randomSeedRaw),
-    upload_desc: "date(substr(v.created_at, 1, 10)) DESC, v.id DESC",
-    upload_asc: "date(substr(v.created_at, 1, 10)) ASC, v.id ASC",
-    views_desc: 'v.view_count DESC, v.id DESC',
-    recent_scan: 'v.last_scanned_at DESC, v.id DESC'
+    upload_desc: `date(substr(v.created_at, 1, 10)) DESC, ${buildRandomOrderBy(randomSeedRaw)}`,
+    upload_asc: `date(substr(v.created_at, 1, 10)) ASC, ${buildRandomOrderBy(randomSeedRaw)}`,
+    views_desc: `v.view_count DESC, ${buildRandomOrderBy(randomSeedRaw)}`,
+    views_asc: `v.view_count ASC, ${buildRandomOrderBy(randomSeedRaw)}`,
+    rating_desc: `CASE WHEN cr.rating_count > 0 THEN 0 ELSE 1 END ASC, COALESCE(cr.average_rating, 0) DESC, v.view_count DESC, ${buildRandomOrderBy(randomSeedRaw)}`,
+    rating_asc: `CASE WHEN cr.rating_count > 0 THEN 0 ELSE 1 END ASC, COALESCE(cr.average_rating, 0) ASC, v.view_count ASC, ${buildRandomOrderBy(randomSeedRaw)}`
   }[sort] || buildRandomOrderBy(randomSeedRaw);
 
   const whereSql = `WHERE ${whereClauses.join(' AND ')}`;
@@ -1661,11 +1663,25 @@ app.get('/api/videos/:id/related', async (request, reply) => {
       if (b.score !== a.score) return b.score - a.score;
       if (b.row.view_count !== a.row.view_count) return b.row.view_count - a.row.view_count;
       return (b.row.updated_at || '').localeCompare(a.row.updated_at || '');
-    })
-    .slice(0, limit)
-    .map(({ row }) => serializeVideoRow(row));
+    });
 
-  return { items: scored };
+  const relatedCount = Math.max(1, Math.ceil(limit * 0.75));
+  const randomCount = limit - relatedCount;
+
+  const relatedPicks = scored.slice(0, relatedCount);
+  const relatedIds = new Set(relatedPicks.map((s) => s.row.id));
+  relatedIds.add(videoId);
+
+  const randomPool = candidates.filter((row) => !relatedIds.has(row.id));
+  for (let i = randomPool.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [randomPool[i], randomPool[j]] = [randomPool[j], randomPool[i]];
+  }
+  const randomPicks = randomPool.slice(0, randomCount).map((row) => ({ row, score: -1 }));
+
+  const combined = [...relatedPicks, ...randomPicks].map(({ row }) => serializeVideoRow(row));
+
+  return { items: combined };
 });
 
 app.get('/api/tags', async () => {
@@ -1800,7 +1816,7 @@ async function start() {
     await cleanupStaleTimelinePreviewTemps();
     cleanupInterruptedLibraryScanState();
     await app.listen({ port, host });
-    console.log(`Video player running at http://${host}:${port}`);
+    console.log(`CornField is running at http://${host}:${port}`);
   } catch (error) {
     console.error(error);
     process.exit(1);

@@ -50,7 +50,6 @@ done
 
 if [ "$READY" -eq 1 ]; then
   open "$APP_URL"
-  echo "CornField is running at $APP_URL"
 else
   echo "CornField is still starting. Open $APP_URL manually in your browser."
 fi

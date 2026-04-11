@@ -593,7 +593,7 @@ export function cleanupInterruptedLibraryScanState() {
   const result = clearInterruptedScanSessionsStmt.run();
 
   if (result.changes > 0) {
-    logScanInfo('cleared interrupted scan markers', `rows=${result.changes}`);
+    logScanInfo(`successfully reset ${result.changes} interrupted scan(s) from last session`);
   }
 
   return result.changes;

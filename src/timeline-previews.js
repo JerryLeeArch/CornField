@@ -37,7 +37,7 @@ function logPreviewWarn(message, details = '') {
 
 function getQueueStateText({ afterCurrentJob = false } = {}) {
   const nextActiveCount = afterCurrentJob ? Math.max(0, activeGenerationCount - 1) : activeGenerationCount;
-  return `queueLength=${generationQueue.length} activeJobs=${nextActiveCount}`;
+  return `queue=${generationQueue.length} active=${nextActiveCount}`;
 }
 
 async function resolveFfmpegPath() {
@@ -245,10 +245,7 @@ async function generateManifest({ videoId, absPath, durationSec, sourceHash }) {
     await fs.writeFile(path.join(tempDir, 'manifest.json'), JSON.stringify(manifest, null, 2));
     await fs.rm(previewDir, { recursive: true, force: true }).catch(() => {});
     await fs.rename(tempDir, previewDir);
-    logPreviewInfo(
-      'done',
-      `video=${videoId} frames=${manifest.items.length} elapsed=${Date.now() - generationStartedAt}ms ${getQueueStateText({ afterCurrentJob: true })}`
-    );
+    logPreviewInfo('done', `video=${videoId} ${getQueueStateText({ afterCurrentJob: true })}`);
     return manifest;
   } catch (error) {
     logPreviewWarn(
@@ -284,12 +281,8 @@ function enqueuePreviewGeneration(job) {
       resolve
     });
 
-    logPreviewInfo(
-      'enqueued',
-      `${getQueueStateText()}`
-    );
-
     pumpGenerationQueue();
+    logPreviewInfo('enqueued', getQueueStateText());
   });
 }
 
@@ -304,7 +297,7 @@ export async function cleanupStaleTimelinePreviewTemps() {
   await Promise.all(staleDirs.map((dirPath) => fs.rm(dirPath, { recursive: true, force: true }).catch(() => {})));
 
   if (staleDirs.length > 0) {
-    logPreviewInfo('cleaned stale temp dirs', `count=${staleDirs.length}`);
+    logPreviewInfo(`successfully cleaned up ${staleDirs.length} incomplete preview(s) from last session`);
   }
 }
 
