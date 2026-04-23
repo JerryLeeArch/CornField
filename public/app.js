@@ -2463,11 +2463,10 @@ async function renderStarringsView() {
     const itemsHtml = (data.items || [])
       .map(
         (item) => `
-          <div class="starring-item">
+          <button type="button" class="starring-item" data-open-starring="${escapeHtml(item.name)}" aria-label="Open ${escapeHtml(item.name)} starring videos">
             <div><strong>${escapeHtml(item.name)}</strong></div>
             <div class="muted">${item.videoCount} videos</div>
-            <button data-open-starring="${escapeHtml(item.name)}" style="margin-top: .45rem;">Open</button>
-          </div>
+          </button>
         `
       )
       .join('');
